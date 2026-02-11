@@ -4,10 +4,10 @@
     "repo": "telemt",
     "ref": "main"
   },
-  "upstream_sha": "94750a27490802a18a1397160ac4836e68431690",
+  "upstream_sha": "acf90043ebeeffda4c950f393ff2e4cefa363d67",
   "base_images": {
     "rust_alpine_manifest_digest": "sha256:69d7b9d9aeaf108a1419d9a7fcf7860dcc043e9dbd1ab7ce88e44228774d99e9",
     "distroless_static_nonroot_manifest_digest": "sha256:f9f84bd968430d7d35e8e6d55c40efb0b980829ec42920a49e60e65eac0d83fc"
   },
-  "built_at_utc": "2026-02-02T13:37:27Z"
+  "built_at_utc": "2026-02-11T04:14:18Z"
 }
