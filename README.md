@@ -95,7 +95,7 @@ services:
           cpus: "0.25"
           memory: 128M
 
-    # Лимиты файловых дескрипторов (КРИТИЧНО для высоконагруженного сервера!)
+    # File descriptor limits (critical for a high-load server!)
     ulimits:
       nofile:
         soft: 65536
