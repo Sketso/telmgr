@@ -38,9 +38,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \
     \
-    if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi; \
-    \
-    cargo build --release --locked --bin telemt; \
+    cargo build --release --bin telemt; \
     \
     mkdir -p /out; \
     install -Dm755 target/release/telemt /out/telemt; \
