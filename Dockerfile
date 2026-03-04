@@ -13,6 +13,8 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     CARGO_PROFILE_RELEASE_LTO=true \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
     CARGO_PROFILE_RELEASE_DEBUG=false \
+    CARGO_PROFILE_RELEASE_STRIP=true \
+    CARGO_PROFILE_RELEASE_PANIC=abort \
     OPENSSL_STATIC=1
 
 WORKDIR /src
@@ -20,8 +22,7 @@ WORKDIR /src
 RUN --mount=type=cache,target=/var/cache/apk \
     apk add --no-cache \
       ca-certificates git \
-      build-base musl-dev pkgconf perl \
-      binutils \
+      build-base musl-dev pkgconf \
       openssl-dev openssl-libs-static \
       zlib-dev zlib-static \
     && update-ca-certificates
@@ -32,26 +33,17 @@ RUN --mount=type=cache,target=/root/.cache/git \
         && git fetch --depth=1 origin "${TELEMT_REF}" \
         && git checkout --detach FETCH_HEAD)
 
-RUN rustup component add rustfmt
-
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
     set -eux; \
     \
-    cargo fmt --all; \
-    \
     if [ ! -f Cargo.lock ]; then cargo generate-lockfile; fi; \
-    \
-    (cargo fix --bin "telemt" -p telemt --allow-dirty --allow-staged || true); \
-    \
-    cargo fmt --all; \
     \
     cargo build --release --locked --bin telemt; \
     \
     mkdir -p /out; \
     install -Dm755 target/release/telemt /out/telemt; \
-    strip /out/telemt; \
     \
     if readelf -lW /out/telemt | grep -q "Requesting program interpreter"; then \
       echo "ERROR: telemt is dynamically linked -> cannot run in distroless/static"; \
