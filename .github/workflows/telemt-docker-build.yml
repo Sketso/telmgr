@@ -196,6 +196,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+          provenance: mode=max
+          sbom: true
+
           labels: |
             org.opencontainers.image.source=${{ github.repositoryUrl }}
             org.opencontainers.image.revision=${{ steps.check.outputs.release_sha }}
