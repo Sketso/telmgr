@@ -3,10 +3,25 @@
 ARG TELEMT_REPO=https://github.com/telemt/telemt.git
 ARG TELEMT_REF=main
 
-FROM --platform=$TARGETPLATFORM rust:alpine AS build
+FROM --platform=$TARGETPLATFORM dhi.io/alpine-base:3.23-dev AS build
 
 ARG TELEMT_REPO
 ARG TELEMT_REF
+
+ENV RUSTUP_HOME="/usr/local/rustup" \
+    CARGO_HOME="/usr/local/cargo" \
+    PATH="/usr/local/cargo/bin:${PATH}"
+
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add --no-cache \
+      ca-certificates git curl \
+      build-base musl-dev pkgconf \
+      openssl-dev openssl-libs-static \
+      zlib-dev zlib-static \
+    && update-ca-certificates
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal
 
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     CARGO_TERM_COLOR=always \
@@ -20,14 +35,6 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     OPENSSL_STATIC=1
 
 WORKDIR /src
-
-RUN --mount=type=cache,target=/var/cache/apk \
-    apk add --no-cache \
-      ca-certificates git \
-      build-base musl-dev pkgconf \
-      openssl-dev openssl-libs-static \
-      zlib-dev zlib-static \
-    && update-ca-certificates
 
 RUN --mount=type=cache,target=/root/.cache/git \
     git clone --depth=1 --branch "${TELEMT_REF}" "${TELEMT_REPO}" . \
