@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/var/cache/apk \
       build-base musl-dev pkgconf \
       openssl-dev openssl-libs-static \
       zlib-dev zlib-static \
+      upx \
     && update-ca-certificates
 
 RUN set -eux; \
@@ -64,6 +65,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       echo "ERROR: telemt is dynamically linked -> cannot run in distroless/static"; \
       exit 1; \
     fi
+
+RUN set -eux; \
+    echo "=== Before UPX ===" && ls -lh /out/telemt; \
+    upx --ultra-brute --preserve-build-id /out/telemt; \
+    echo "=== After UPX ===" && ls -lh /out/telemt; \
+    echo "=== Integrity check ===" && upx -t /out/telemt
 
 FROM gcr.io/distroless/static:nonroot AS runtime
 
