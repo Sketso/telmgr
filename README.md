@@ -85,6 +85,9 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
 
+    # Mount to host machine
+    network_mode: host
+
     # Resource limits (optional)
     deploy:
       resources:
