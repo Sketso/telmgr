@@ -134,6 +134,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp "$SCRIPT_DIR/../telmgr" /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 ok "telmgr установлен в /usr/local/bin"
+cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
 
 # === Переменные окружения ===
 grep -q "TELEMT_HOST" ~/.bashrc || cat >> ~/.bashrc << EOF
