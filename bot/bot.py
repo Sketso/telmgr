@@ -431,6 +431,8 @@ async def cb_all_users(cb: CallbackQuery):
     meta = telmgr.load_meta()
     toml_content = telmgr.read_toml()
     toml_users = telmgr.get_users_from_toml(toml_content)
+    admins_data = load_admins()
+    active_admin_ids = set(admins_data.get('admins', {}).keys())
 
     for name in meta:
         if name in toml_users:
@@ -442,15 +444,23 @@ async def cb_all_users(cb: CallbackQuery):
         admin_username = data.get('admin_username')
         admin_name = data.get('admin_name')
         if admin_id is None:
-            key = "👑 " + cb.from_user.full_name + " (суперадмин / CLI)"
-        elif admin_username:
-            key = "👤 @" + admin_username
+            key = ("👑 " + cb.from_user.full_name + " (суперадмин / CLI)", False)
+        elif str(admin_id) in active_admin_ids:
+            if admin_username:
+                key = ("👤 @" + admin_username, False)
+            else:
+                key = ("👤 " + str(admin_name or admin_id), False)
         else:
-            key = "👤 " + str(admin_name or admin_id)
+            if admin_username:
+                key = ("👤 @" + admin_username + " (Удалён)", True)
+            else:
+                key = ("👤 " + str(admin_name or admin_id) + " (Удалён)", True)
         groups.setdefault(key, {})[name] = data
 
     lines = ["👑 <b>Все юзеры:</b>\n"]
-    for admin_label, users in groups.items():
+    for (admin_label, is_deleted), users in groups.items():
+        if is_deleted and not users:
+            continue
         lines.append("<b>" + admin_label + ":</b>")
         for name, data in users.items():
             status = "🔴" if data.get('disabled') else "🟢"
@@ -460,7 +470,6 @@ async def cb_all_users(cb: CallbackQuery):
 
     await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
     await cb.answer()
-
 
 # === Admin management ===
 
