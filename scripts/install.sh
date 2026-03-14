@@ -216,6 +216,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$TELEMT_DIR
+Environment="TELEMT_HOST=$TELEMT_HOST"
+Environment="TELEMT_PORT=$TELEMT_PORT"
+Environment="TELEMT_DIR=$TELEMT_DIR"
 ExecStart=/usr/bin/python3 $TELEMT_DIR/bot.py
 Restart=on-failure
 RestartSec=5
