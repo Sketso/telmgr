@@ -72,6 +72,8 @@ def generate_secret():
     return subprocess.check_output(["openssl", "rand", "-hex", "16"]).decode().strip()
 
 def build_link(secret):
+    if not PUBLIC_HOST:
+        err("Укажи переменную окружения TELEMT_HOST")
     domain_hex = PUBLIC_HOST.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
     return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
@@ -486,8 +488,6 @@ def usage():
 """)
 
 def main():
-    if not PUBLIC_HOST:
-        err("Укажи переменную окружения TELEMT_HOST (например: export TELEMT_HOST=your.domain.com)")
     args = sys.argv[1:]
     if len(args) < 1:
         usage()
