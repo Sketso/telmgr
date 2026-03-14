@@ -11,16 +11,22 @@ RESET="\033[0m"
 ok()   { echo -e "${GREEN}✅ $1${RESET}"; }
 warn() { echo -e "${YELLOW}⚠️  $1${RESET}"; }
 info() { echo -e "${CYAN}$1${RESET}"; }
+err()  { echo -e "${RED}❌ $1${RESET}"; exit 1; }
 
 echo -e "\n${BOLD}=== telmgr uninstaller ===${RESET}\n"
 
-[[ $EUID -ne 0 ]] && echo -e "${RED}❌ Запусти от root${RESET}" && exit 1
+[[ $EUID -ne 0 ]] && err "Запусти от root"
 
+# Читаем TELEMT_DIR из .env если есть
+ENV_FILE="${HOME}/telemt/.env"
+if [ -f "$ENV_FILE" ]; then
+    TELEMT_DIR=$(grep "^TELEMT_DIR=" "$ENV_FILE" | cut -d'=' -f2)
+fi
 TELEMT_DIR="${TELEMT_DIR:-$HOME/telemt}"
 
-# Бэкап перед удалением
-read -p "Создать бэкап перед удалением? [Y/n]: " DO_BACKUP
-if [[ ! "$DO_BACKUP" =~ ^[Nn]$ ]]; then
+# === Бэкап ===
+read -p "Создать бэкап перед удалением? [y/N]: " DO_BACKUP
+if [[ "$DO_BACKUP" =~ ^[Yy]$ ]]; then
     if command -v telmgr &>/dev/null; then
         telmgr backup
     else
@@ -28,7 +34,7 @@ if [[ ! "$DO_BACKUP" =~ ^[Nn]$ ]]; then
     fi
 fi
 
-# Останавливаем бота
+# === Останавливаем systemd бота (старые установки) ===
 if systemctl is-active --quiet telmgr-bot 2>/dev/null; then
     systemctl stop telmgr-bot
     systemctl disable telmgr-bot
@@ -37,13 +43,13 @@ if systemctl is-active --quiet telmgr-bot 2>/dev/null; then
     ok "Systemd сервис бота удалён"
 fi
 
-# Останавливаем Docker
+# === Останавливаем Docker (прокси + бот) ===
 if [ -f "$TELEMT_DIR/docker-compose.yml" ]; then
     docker compose -f "$TELEMT_DIR/docker-compose.yml" down
-    ok "Docker контейнер остановлен"
+    ok "Docker контейнеры остановлены"
 fi
 
-# Удаляем файлы
+# === Удаляем файлы ===
 rm -rf "$TELEMT_DIR"
 ok "Директория $TELEMT_DIR удалена"
 
@@ -51,12 +57,7 @@ rm -f /usr/local/bin/telmgr
 rm -f /usr/local/bin/telmgr.py
 ok "telmgr удалён из /usr/local/bin"
 
-grep -n "bashrc" ~/telmgr/scripts/uninstall.sh
-git add telmgr scripts/install.sh scripts/uninstall.sh
-git commit -m "fix: use .env instead of .bashrc for config vars"
-git push
-
-# Чистим cron
+# === Чистим cron ===
 crontab -l 2>/dev/null | grep -v "telmgr" | crontab - 2>/dev/null || true
 ok "Cron задачи удалены"
 
