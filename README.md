@@ -12,7 +12,7 @@
 ```bash
 git clone https://github.com/Sketso/telmgr.git
 cd telmgr
-bash scripts/install.sh
+source scripts/install.sh
 ```
 
 Скрипт установит Docker (если нет), создаст конфиг, запустит прокси, установит `telmgr` и опционально настроит Telegram бота как systemd сервис.
