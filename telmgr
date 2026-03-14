@@ -363,35 +363,161 @@ def cmd_admin_delete(telegram_id):
         json.dump(data, f, indent=2)
     ok(f"Админ {telegram_id} удалён")
 
+def cmd_status():
+    result = subprocess.run(
+        ["docker", "inspect", "--format",
+         "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        err("Контейнер telemt не найден")
+
+    status, started_at = result.stdout.strip().split(" ", 1)
+    started_dt = datetime.fromisoformat(started_at[:19])
+    uptime = datetime.now() - started_dt
+    hours, rem = divmod(int(uptime.total_seconds()), 3600)
+    minutes = rem // 60
+
+    meta = load_meta()
+    content = read_toml()
+    users = get_users_from_toml(content)
+    active = sum(1 for u in users.values() if not u['disabled'])
+    disabled = sum(1 for u in users.values() if u['disabled'])
+
+    print(f"\n{BOLD}=== Telemt MTProxy ==={RESET}")
+    print(f"Статус:    {GREEN}running{RESET}" if status == "running" else f"Статус:    {RED}{status}{RESET}")
+    print(f"Аптайм:    {hours}ч {minutes}м")
+    print(f"Хост:      {PUBLIC_HOST}:{PUBLIC_PORT}")
+    print(f"Юзеры:     {GREEN}{active} active{RESET} / {RED}{disabled} disabled{RESET}")
+    print()
+
+def cmd_logs(lines=50):
+    subprocess.run(["docker", "logs", "--tail", str(lines), "telemt"])
+
+def cmd_expire(days=7):
+    meta = load_meta()
+    content = read_toml()
+    users = get_users_from_toml(content)
+    soon = []
+    for name, data in meta.items():
+        if data.get('expires'):
+            exp = datetime.strptime(data['expires'], "%Y-%m-%d")
+            diff = (exp - datetime.now()).days
+            if diff <= int(days):
+                disabled = users.get(name, {}).get('disabled', False)
+                soon.append((name, data['expires'], diff, disabled))
+
+    if not soon:
+        ok(f"Нет юзеров с истекающим сроком в ближайшие {days} дней")
+        return
+
+    print(f"\n{BOLD}Юзеры с истекающим сроком (до {days} дней):{RESET}")
+    for name, expires, diff, disabled in sorted(soon, key=lambda x: x[2]):
+        status = f"{RED}disabled{RESET}" if disabled else f"{GREEN}active{RESET}"
+        color = RED if diff <= 3 else YELLOW
+        print(f"  {color}{name}{RESET} — {expires} (через {diff} дн.) [{status}]")
+    print()
+
+def cmd_update():
+    info("Обновляем Docker образ...")
+    subprocess.run(["docker", "pull", "whn0thacked/telemt-docker:latest"], check=True)
+    info("Перезапускаем контейнер...")
+    subprocess.run(["docker", "compose", "up", "-d"], cwd=TELEMT_DIR, check=True)
+    ok("Обновление завершено!")
+
+def cmd_backup():
+    import tarfile
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.expanduser(f"~/telmgr-backup-{timestamp}.tar.gz")
+    files = [
+        os.path.join(TELEMT_DIR, "telemt.toml"),
+        os.path.join(TELEMT_DIR, ".telmgr-meta.json"),
+        os.path.join(TELEMT_DIR, ".telmgr-admins.json"),
+        os.path.join(TELEMT_DIR, ".env"),
+    ]
+    with tarfile.open(backup_file, "w:gz") as tar:
+        for f in files:
+            if os.path.exists(f):
+                tar.add(f, arcname=os.path.basename(f))
+    ok(f"Бэкап создан: {backup_file}")
+    warn(f"При восстановлении на новом сервере домен должен быть идентичным: {PUBLIC_HOST}")
+    warn("Иначе ссылки пользователей перестанут работать!")
+
+def cmd_restore(backup_file):
+    import tarfile
+    if not os.path.exists(backup_file):
+        err(f"Файл не найден: {backup_file}")
+    warn(f"Восстановление из {backup_file}")
+    warn(f"Убедись что домен сервера совпадает с оригинальным!")
+    confirm = input("Продолжить? [y/N]: ")
+    if confirm.lower() != 'y':
+        info("Отменено")
+        return
+    with tarfile.open(backup_file, "r:gz") as tar:
+        tar.extractall(TELEMT_DIR)
+    ok("Файлы восстановлены")
+    info("Перезапусти контейнер: docker compose restart")
+    info("Перезапусти бота: systemctl restart telmgr-bot")
+
 def usage():
     print(f"""
 {BOLD}telmgr — менеджер пользователей Telemt MTProxy{RESET}
 
 Использование:
-  telmgr user add <name> [days]    Добавить пользователя (days=0 — бессрочно)
-  telmgr user delete <name>        Удалить пользователя
-  telmgr user disable <name>       Отключить пользователя
-  telmgr user enable <name>        Включить пользователя
-  telmgr user limit <name> <days>  Установить лимит (0 — снять)
-  telmgr user list                 Список пользователей
-  telmgr user link <name>          Показать ссылку
-  telmgr user import <name>        Импортировать существующего юзера из конфига
+  telmgr user add <name> [days]     Добавить пользователя (days=0 — бессрочно)
+  telmgr user delete <name>         Удалить пользователя
+  telmgr user disable <name>        Отключить пользователя
+  telmgr user enable <name>         Включить пользователя
+  telmgr user limit <name> <days>   Установить лимит (0 — снять)
+  telmgr user list                  Список пользователей
+  telmgr user link <name>           Показать ссылку
+  telmgr user import <name>         Импортировать существующего юзера из конфига
+  telmgr user expire [days]         Юзеры с истекающим сроком (default: 7 дней)
 
-  telmgr admin list                Список админов
-  telmgr admin add <telegram_id>   Добавить админа
+  telmgr admin list                 Список админов
+  telmgr admin add <telegram_id>    Добавить админа
   telmgr admin delete <telegram_id> Удалить админа
+
+  telmgr status                     Статус прокси
+  telmgr logs [lines]               Логи контейнера (default: 50)
+  telmgr update                     Обновить Docker образ
+  telmgr backup                     Создать бэкап
+  telmgr restore <file>             Восстановить из бэкапа
 """)
 
 def main():
     if not PUBLIC_HOST:
         err("Укажи переменную окружения TELEMT_HOST (например: export TELEMT_HOST=your.domain.com)")
     args = sys.argv[1:]
+    if len(args) < 1:
+        usage()
+        sys.exit(0)
+
+    section = args[0]
+
+    # Команды без подкоманд
+    if section == "status":
+        cmd_status()
+        return
+    elif section == "logs":
+        lines = args[1] if len(args) > 1 else 50
+        cmd_logs(lines)
+        return
+    elif section == "update":
+        cmd_update()
+        return
+    elif section == "backup":
+        cmd_backup()
+        return
+    elif section == "restore":
+        if len(args) < 2: err("Укажи путь к файлу бэкапа")
+        cmd_restore(args[1])
+        return
 
     if len(args) < 2:
         usage()
         sys.exit(0)
 
-    section = args[0]
     cmd = args[1]
 
     if section == "user":
@@ -419,9 +545,11 @@ def main():
         elif cmd == "import":
             if len(args) < 3: err("Укажи имя пользователя")
             cmd_import(args[2])
+        elif cmd == "expire":
+            days = args[2] if len(args) > 2 else 7
+            cmd_expire(days)
         else:
             err(f"Неизвестная команда: {cmd}")
-
     elif section == "admin":
         if cmd == "list":
             cmd_admin_list()
@@ -433,7 +561,6 @@ def main():
             cmd_admin_delete(args[2])
         else:
             err(f"Неизвестная команда: {cmd}")
-
     else:
         usage()
         sys.exit(0)
