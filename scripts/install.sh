@@ -44,6 +44,7 @@ fi
 # === Запрашиваем параметры ===
 echo ""
 read -p "Введи публичный домен или IP сервера: " TELEMT_HOST
+TELEMT_HOST=$(echo "$TELEMT_HOST" | tr -cd '[:alnum:].-')
 [[ -z "$TELEMT_HOST" ]] && err "Домен не может быть пустым"
 
 read -p "Введи порт прокси [2053]: " TELEMT_PORT
