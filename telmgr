@@ -75,7 +75,7 @@ def generate_secret():
 def build_link(secret):
     domain_hex = PUBLIC_HOST.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
-    return f"https://t.me/proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
+    return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
 
 # === Команды ===
 def cmd_add(name, days=0):
