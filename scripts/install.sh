@@ -174,7 +174,7 @@ ok "Telemt запущен"
 
 # === Итог ===
 DOMAIN_HEX=$(echo -n "$TELEMT_HOST" | xxd -p)
-LINK="https://t.me/proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
+LINK="tg://proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
 
 echo ""
 echo -e "${BOLD}=== Готово! ===${RESET}"
