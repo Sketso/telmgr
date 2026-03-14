@@ -16,8 +16,6 @@ ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
 PUBLIC_HOST = os.environ.get("TELEMT_HOST")
 PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
 
-if not PUBLIC_HOST:
-    err("Укажи переменную окружения TELEMT_HOST (например: export TELEMT_HOST=your.domain.com)")
 
 # === Цвета ===
 RED = "\033[31m"
@@ -385,6 +383,8 @@ def usage():
 """)
 
 def main():
+    if not PUBLIC_HOST:
+        err("Укажи переменную окружения TELEMT_HOST (например: export TELEMT_HOST=your.domain.com)")
     args = sys.argv[1:]
 
     if len(args) < 2:
