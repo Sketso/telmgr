@@ -297,6 +297,8 @@ def cmd_import(name):
 
 # === Cron ===
 def add_cron(name, expires_date):
+    if not subprocess.run(["which", "crontab"], capture_output=True).returncode == 0:
+        return
     dt = datetime.strptime(expires_date, "%Y-%m-%d")
     cron_line = (
         f"0 12 {dt.day} {dt.month} * "
@@ -311,6 +313,8 @@ def add_cron(name, expires_date):
     subprocess.run(["crontab", "-"], input=new_cron, text=True)
 
 def remove_cron(name):
+    if not subprocess.run(["which", "crontab"], capture_output=True).returncode == 0:
+        return
     current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     lines = [l for l in current.splitlines() if f"# telmgr:{name}" not in l]
     new_cron = "\n".join(lines) + "\n"
@@ -325,8 +329,8 @@ def cmd_admin_list():
         data = json.load(f)
     admins = data.get('admins', {})
     pending = data.get('pending', {})
-
     print(f"\n{BOLD}Админы:{RESET}")
+
     if not admins:
         print("  нет")
     for uid, info_data in admins.items():
