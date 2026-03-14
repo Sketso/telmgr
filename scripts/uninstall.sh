@@ -51,9 +51,10 @@ rm -f /usr/local/bin/telmgr
 rm -f /usr/local/bin/telmgr.py
 ok "telmgr удалён из /usr/local/bin"
 
-# Чистим .bashrc
-sed -i '/TELEMT_HOST/d; /TELEMT_PORT/d; /TELEMT_DIR/d; /# telmgr/d' ~/.bashrc
-ok ".bashrc очищен"
+grep -n "bashrc" ~/telmgr/scripts/uninstall.sh
+git add telmgr scripts/install.sh scripts/uninstall.sh
+git commit -m "fix: use .env instead of .bashrc for config vars"
+git push
 
 # Чистим cron
 crontab -l 2>/dev/null | grep -v "telmgr" | crontab - 2>/dev/null || true
