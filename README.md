@@ -8,42 +8,20 @@
 
 ---
 
-## Быстрый старт
-
-### 1. Генерируем секрет и создаём конфиг
-
-```bash
-mkdir -p ~/telemt && cd ~/telemt
-openssl rand -hex 16
-```
-
-Создай `telemt.toml` (см. [пример конфига](telemt.toml.example)).
-
-### 2. Запускаем прокси
-
-```bash
-docker compose up -d
-docker compose logs -f
-```
-
-### 3. Устанавливаем telmgr
-
+## Установка
 ```bash
 git clone https://github.com/Sketso/telmgr.git
-cp telmgr/telmgr /usr/local/bin/telmgr
-chmod +x /usr/local/bin/telmgr
+cd telmgr
+bash scripts/install.sh
 ```
 
-### 4. Открываем порт
+Скрипт установит Docker (если нет), создаст конфиг, запустит прокси и установит `telmgr`.
 
-```bash
-sudo ufw allow 2053/tcp comment "Telemt MTProxy"
-```
+> UFW не устанавливается автоматически — если он есть, порт откроется сам. Если нет — открой вручную.
 
 ---
 
 ## telmgr — управление пользователями
-
 ```bash
 telmgr user list                   # список пользователей
 telmgr user add <name> [days]      # добавить (days=0 — бессрочно)
@@ -59,11 +37,11 @@ telmgr user import <name>          # импортировать существу
 
 ### Переменные окружения
 
-| Переменная | По умолчанию | Описание |
+| Переменная | Обязательная | Описание |
 |---|---|---|
-| `TELEMT_DIR` | `/root/telemt` | Путь к директории с конфигом |
-| `TELEMT_HOST` | `your.domain.com` | Публичный хост прокси |
-| `TELEMT_PORT` | `2053` | Публичный порт прокси |
+| `TELEMT_HOST` | ✅ | Публичный домен или IP сервера |
+| `TELEMT_DIR` | — | Путь к директории с конфигом (default: `/root/telemt`) |
+| `TELEMT_PORT` | — | Публичный порт прокси (default: `2053`) |
 
 ---
 
@@ -72,4 +50,4 @@ telmgr user import <name>          # импортировать существу
 - Ubuntu 22.04 / 24.04
 - Docker + Docker Compose
 - Python 3.10+
-- UFW
+- UFW (опционально)
