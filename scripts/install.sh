@@ -9,17 +9,6 @@ BOLD="\033[1m"
 RESET="\033[0m"
 
 ok()   { echo -e "${GREEN}✅ $1${RESET}"; }
-err()  { echo -e "${RED}❌ $1${RESET}"; exit 1; }#!/bin/bash
-set -e
-
-RED="\033[31m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-CYAN="\033[36m"
-BOLD="\033[1m"
-RESET="\033[0m"
-
-ok()   { echo -e "${GREEN}✅ $1${RESET}"; }
 err()  { echo -e "${RED}❌ $1${RESET}"; exit 1; }
 warn() { echo -e "${YELLOW}⚠️  $1${RESET}"; }
 info() { echo -e "${CYAN}$1${RESET}"; }
