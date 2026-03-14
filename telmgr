@@ -442,7 +442,10 @@ def cmd_backup():
             if os.path.exists(f):
                 tar.add(f, arcname=os.path.basename(f))
     ok(f"Бэкап создан: {backup_file}")
-    warn(f"При восстановлении на новом сервере домен должен быть идентичным: {PUBLIC_HOST}")
+    if PUBLIC_HOST:
+        warn(f"При восстановлении на новом сервере домен должен быть идентичным: {PUBLIC_HOST}")
+    else:
+        warn("При восстановлении на новом сервере домен должен совпадать с оригинальным!")
     warn("Иначе ссылки пользователей перестанут работать!")
 
 def cmd_restore(backup_file):
