@@ -161,6 +161,75 @@ cat > "$TELEMT_DIR/.telmgr-meta.json" << EOF
 EOF
 ok "Метаданные созданы"
 
+# === Telegram Bot ===
+echo ""
+read -p "Установить Telegram бота для управления? [y/N]: " INSTALL_BOT
+if [[ "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
+    echo ""
+    info "Для создания бота напиши @BotFather в Telegram -> /newbot"
+    info "Для получения своего Telegram ID напиши @userinfobot"
+    echo ""
+    read -p "Введи BOT_TOKEN от @BotFather: " BOT_TOKEN
+    [[ -z "$BOT_TOKEN" ]] && err "BOT_TOKEN не может быть пустым"
+    read -p "Введи свой Telegram ID (суперадмин): " SUPER_ADMIN_ID
+    [[ -z "$SUPER_ADMIN_ID" ]] && err "SUPER_ADMIN_ID не может быть пустым"
+
+    # .env
+    cat > "$TELEMT_DIR/.env" << EOF
+BOT_TOKEN=$BOT_TOKEN
+SUPER_ADMIN_ID=$SUPER_ADMIN_ID
+EOF
+    ok ".env создан"
+
+    # admins.json
+    cat > "$TELEMT_DIR/.telmgr-admins.json" << EOF
+{
+  "admins": {
+    "$SUPER_ADMIN_ID": {
+      "username": null,
+      "full_name": "superadmin",
+      "is_super": true
+    }
+  },
+  "pending": {}
+}
+EOF
+    ok ".telmgr-admins.json создан"
+
+    # Зависимости
+    info "Устанавливаем зависимости бота..."
+    pip3 install aiogram python-dotenv --break-system-packages -q
+    ok "Зависимости установлены"
+
+    # Копируем бота
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cp "$SCRIPT_DIR/../bot/bot.py" "$TELEMT_DIR/bot.py"
+    ok "bot.py скопирован в $TELEMT_DIR"
+
+    # Systemd сервис
+    cat > /etc/systemd/system/telmgr-bot.service << EOF
+[Unit]
+Description=telmgr Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$TELEMT_DIR
+ExecStart=/usr/bin/python3 $TELEMT_DIR/bot.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable telmgr-bot
+    systemctl start telmgr-bot
+    ok "Бот запущен как systemd сервис (telmgr-bot)"
+    info "Статус: systemctl status telmgr-bot"
+    info "Логи:   journalctl -u telmgr-bot -f"
+fi
+
 # === UFW ===
 if command -v ufw &>/dev/null; then
     ufw allow "$TELEMT_PORT/tcp" comment "Telemt MTProxy"
