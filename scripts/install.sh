@@ -133,8 +133,7 @@ ok "telemt.toml создан"
 # === docker-compose.yml ===
 if $INSTALL_BOT_ENABLED; then
     # Копируем бота
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    cp "$SCRIPT_DIR/../bot/bot.py" "$TELEMT_DIR/bot.py"
+    curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$TELEMT_DIR/bot.py"
     ok "bot.py скопирован в $TELEMT_DIR"
 
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
@@ -221,8 +220,7 @@ fi
 ok "docker-compose.yml создан"
 
 # === Устанавливаем telmgr ===
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp "$SCRIPT_DIR/../telmgr" /usr/local/bin/telmgr
+curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
 pip3 install python-dotenv --break-system-packages -q
