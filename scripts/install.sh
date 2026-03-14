@@ -138,8 +138,9 @@ ok "telmgr установлен в /usr/local/bin"
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
 
 # === Переменные окружения ===
+TELEMT_HOST=$(echo "$TELEMT_HOST" | tr -cd '[:alnum:].-')
+TELEMT_PORT=$(echo "$TELEMT_PORT" | tr -cd '[:digit:]')
 grep -q "TELEMT_HOST" ~/.bashrc || cat >> ~/.bashrc << EOF
-
 # telmgr
 export TELEMT_HOST=$TELEMT_HOST
 export TELEMT_PORT=$TELEMT_PORT
