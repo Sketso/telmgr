@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import json
+import re
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# === Конфиг ===
+TELEMT_DIR = os.environ.get("TELEMT_DIR", "/root/telemt")
+TOML_PATH = os.path.join(TELEMT_DIR, "telemt.toml")
+META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
+PUBLIC_HOST = os.environ.get("TELEMT_HOST", "your.domain.com")
+PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
+
+# === Цвета ===
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+def ok(msg): print(f"{GREEN}✅ {msg}{RESET}")
+def err(msg): print(f"{RED}❌ {msg}{RESET}"); sys.exit(1)
+def warn(msg): print(f"{YELLOW}⚠️  {msg}{RESET}")
+def info(msg): print(f"{CYAN}{msg}{RESET}")
+
+# === Метаданные ===
+def load_meta():
+    if not Path(META_PATH).exists():
+        return {}
+    with open(META_PATH) as f:
+        return json.load(f)
+
+def save_meta(meta):
+    with open(META_PATH, "w") as f:
+        json.dump(meta, f, indent=2)
+
+# === TOML хелперы ===
+def read_toml():
+    with open(TOML_PATH) as f:
+        return f.read()
+
+def write_toml(content):
+    with open(TOML_PATH, "w") as f:
+        f.write(content)
+
+def get_users_from_toml(content):
+    """Возвращает dict {name: secret} активных и отключённых юзеров"""
+    users = {}
+    in_section = False
+    for line in content.splitlines():
+        if line.strip() == "[access.users]":
+            in_section = True
+            continue
+        if in_section:
+            if line.strip().startswith("["):
+                break
+            # Активный юзер
+            m = re.match(r'^(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
+            if m:
+                users[m.group(1)] = {"secret": m.group(2), "disabled": False}
+            # Отключённый юзер (закомментирован)
+            m = re.match(r'^#\s*(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
+            if m:
+                users[m.group(1)] = {"secret": m.group(2), "disabled": True}
+    return users
+
+def generate_secret():
+    return subprocess.check_output(["openssl", "rand", "-hex", "16"]).decode().strip()
+
+def build_link(secret):
+    # EE-TLS ссылка: ee + secret + hex(domain)
+    domain_hex = PUBLIC_HOST.encode().hex()
+    full_secret = f"ee{secret}{domain_hex}"
+    return f"https://t.me/proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
+
+# === Команды ===
+def cmd_add(name, days=0):
+    if not re.match(r'^\w+$', name):
+        err(f"Имя пользователя может содержать только буквы, цифры и _")
+
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name in users:
+        err(f"Пользователь '{name}' уже существует")
+
+    secret = generate_secret()
+
+    # Вставляем после [access.users]
+    new_content = content.replace(
+        "[access.users]",
+        f"[access.users]",
+    )
+    lines = content.splitlines()
+    result = []
+    in_section = False
+    inserted = False
+    for line in lines:
+        result.append(line)
+        if line.strip() == "[access.users]":
+            in_section = True
+            continue
+        if in_section and not inserted:
+            result.append(f'{name} = "{secret}"')
+            inserted = True
+
+    if not inserted:
+        err("Секция [access.users] не найдена в конфиге")
+
+    write_toml("\n".join(result))
+
+    # Метаданные
+    meta = load_meta()
+    expires = None
+    if days and int(days) > 0:
+        expires = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
+    meta[name] = {
+        "secret": secret,
+        "created": datetime.now().strftime("%Y-%m-%d"),
+        "expires": expires,
+        "disabled": False
+    }
+    save_meta(meta)
+
+    # Cron если нужен
+    if expires:
+        add_cron(name, expires)
+
+    ok(f"Пользователь '{name}' добавлен")
+    if expires:
+        info(f"📅 Истекает: {expires}")
+    info(f"🔗 Ссылка: {build_link(secret)}")
+
+def cmd_delete(name):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден")
+
+    lines = content.splitlines()
+    result = [l for l in lines if not re.match(rf'^#?\s*{name}\s*=\s*"[0-9a-f]{{32}}"', l)]
+    write_toml("\n".join(result))
+
+    meta = load_meta()
+    if name in meta:
+        del meta[name]
+        save_meta(meta)
+
+    remove_cron(name)
+    ok(f"Пользователь '{name}' удалён")
+
+def cmd_disable(name):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден")
+    if users[name]["disabled"]:
+        warn(f"Пользователь '{name}' уже отключён")
+        return
+
+    new_content = re.sub(
+        rf'^({name}\s*=\s*"[0-9a-f]{{32}}")',
+        r'# \1',
+        content,
+        flags=re.MULTILINE
+    )
+    write_toml(new_content)
+
+    meta = load_meta()
+    if name in meta:
+        meta[name]["disabled"] = True
+        save_meta(meta)
+
+    ok(f"Пользователь '{name}' отключён")
+
+def cmd_enable(name):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден")
+    if not users[name]["disabled"]:
+        warn(f"Пользователь '{name}' уже активен")
+        return
+
+    new_content = re.sub(
+        rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+        r'\1',
+        content,
+        flags=re.MULTILINE
+    )
+    write_toml(new_content)
+
+    meta = load_meta()
+    if name in meta:
+        meta[name]["disabled"] = False
+        save_meta(meta)
+
+    ok(f"Пользователь '{name}' включён")
+
+def cmd_limit(name, days):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден")
+
+    meta = load_meta()
+    if name not in meta:
+        err(f"Метаданные для '{name}' не найдены")
+
+    days = int(days)
+    remove_cron(name)
+
+    if days == 0:
+        meta[name]["expires"] = None
+        save_meta(meta)
+        ok(f"Лимит для '{name}' снят — пользователь теперь бессрочный")
+        return
+
+    expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    meta[name]["expires"] = expires
+    save_meta(meta)
+    add_cron(name, expires)
+
+    ok(f"Лимит установлен: '{name}' будет отключён {expires}")
+
+def cmd_list():
+    content = read_toml()
+    users = get_users_from_toml(content)
+    meta = load_meta()
+
+    if not users:
+        info("Пользователей нет")
+        return
+
+    print(f"\n{BOLD}{'Имя':<15} {'Статус':<12} {'Создан':<12} {'Истекает':<12}{RESET}")
+    print("─" * 55)
+
+    for name, data in users.items():
+        m = meta.get(name, {})
+        status = f"{RED}disabled{RESET}" if data["disabled"] else f"{GREEN}active{RESET}"
+        created = m.get("created", "—")
+        expires = m.get("expires") or "∞"
+
+        # Проверяем не истёк ли
+        if m.get("expires"):
+            exp_date = datetime.strptime(m["expires"], "%Y-%m-%d")
+            if exp_date < datetime.now() and not data["disabled"]:
+                expires = f"{RED}{expires} (просрочен!){RESET}"
+
+        print(f"{name:<15} {status:<20} {created:<12} {expires}")
+    print()
+
+def cmd_link(name):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден")
+
+    secret = users[name]["secret"]
+    if users[name]["disabled"]:
+        warn(f"Пользователь '{name}' отключён, но ссылка:")
+
+    info(f"🔗 {build_link(secret)}")
+
+# === Cron ===
+def add_cron(name, expires_date):
+    dt = datetime.strptime(expires_date, "%Y-%m-%d")
+    cron_line = (
+        f"0 12 {dt.day} {dt.month} * "
+        f"/usr/local/bin/telmgr user disable {name} "
+        f">> /var/log/telmgr.log 2>&1 "
+        f"# telmgr:{name}"
+    )
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    # Убираем старую запись если есть
+    lines = [l for l in current.splitlines() if f"# telmgr:{name}" not in l]
+    lines.append(cron_line)
+    new_cron = "\n".join(lines) + "\n"
+    subprocess.run(["crontab", "-"], input=new_cron, text=True)
+
+def remove_cron(name):
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    lines = [l for l in current.splitlines() if f"# telmgr:{name}" not in l]
+    new_cron = "\n".join(lines) + "\n"
+    subprocess.run(["crontab", "-"], input=new_cron, text=True)
+
+# === Точка входа ===
+def usage():
+    print(f"""
+{BOLD}telmgr — менеджер пользователей Telemt MTProxy{RESET}
+
+Использование:
+  telmgr user add <name> [days]    Добавить пользователя (days=0 — бессрочно)
+  telmgr user delete <name>        Удалить пользователя
+  telmgr user disable <name>       Отключить пользователя
+  telmgr user enable <name>        Включить пользователя
+  telmgr user limit <name> <days>  Установить лимит (0 — снять)
+  telmgr user list                 Список пользователей
+  telmgr user link <name>          Показать ссылку
+
+Переменные окружения:
+  TELEMT_DIR    Путь к директории telemt (default: /root/telemt)
+  TELEMT_HOST   Публичный хост (default: your.domain.com)
+  TELEMT_PORT   Публичный порт (default: 2053)
+""")
+
+def main():
+    args = sys.argv[1:]
+
+    if len(args) < 2 or args[0] != "user":
+        usage()
+        sys.exit(0)
+
+    cmd = args[1]
+
+    if cmd == "add":
+        if len(args) < 3: err("Укажи имя пользователя")
+        days = args[3] if len(args) > 3 else 0
+        cmd_add(args[2], days)
+    elif cmd == "delete":
+        if len(args) < 3: err("Укажи имя пользователя")
+        cmd_delete(args[2])
+    elif cmd == "disable":
+        if len(args) < 3: err("Укажи имя пользователя")
+        cmd_disable(args[2])
+    elif cmd == "enable":
+        if len(args) < 3: err("Укажи имя пользователя")
+        cmd_enable(args[2])
+    elif cmd == "limit":
+        if len(args) < 4: err("Укажи имя и количество дней")
+        cmd_limit(args[2], args[3])
+    elif cmd == "list":
+        cmd_list()
+    elif cmd == "link":
+        if len(args) < 3: err("Укажи имя пользователя")
+        cmd_link(args[2])
+    else:
+        err(f"Неизвестная команда: {cmd}")
+
+if __name__ == "__main__":
+    main()
