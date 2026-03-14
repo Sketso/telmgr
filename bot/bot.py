@@ -113,7 +113,10 @@ def main_keyboard(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏸ Откл/Вкл юзера", callback_data="toggle_user")],
         [InlineKeyboardButton(text="⏱ Установить лимит", callback_data="limit_user")],
         [InlineKeyboardButton(text="🔗 Ссылка юзера", callback_data="link_user")],
-        [InlineKeyboardButton(text="👥 Мои юзеры", callback_data="my_users")],
+        [
+            InlineKeyboardButton(text="👥 Мои юзеры", callback_data="my_users"),
+            InlineKeyboardButton(text="⏰ Истекают", callback_data="expiring_users"),
+        ],
     ]
     if is_super_admin(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Все юзеры", callback_data="all_users")])
@@ -421,6 +424,35 @@ async def cb_my_users(cb: CallbackQuery):
             my[name]['disabled'] = toml_users[name]['disabled']
     text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my, toml_users)
     await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    await cb.answer()
+
+@dp.callback_query(F.data == "expiring_users")
+async def cb_expiring_users(cb: CallbackQuery):
+    meta = telmgr.load_meta()
+    content = telmgr.read_toml()
+    toml_users = telmgr.get_users_from_toml(content)
+    from datetime import datetime, timedelta
+    soon = []
+    for name, data in meta.items():
+        if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
+            continue
+        if data.get('expires'):
+            exp = datetime.strptime(data['expires'], "%Y-%m-%d")
+            diff = (exp - datetime.now()).days
+            if diff <= 5:
+                disabled = toml_users.get(name, {}).get('disabled', False)
+                soon.append((name, data['expires'], diff, disabled))
+    if not soon:
+        await cb.message.answer("✅ Нет юзеров с истекающим сроком в ближайшие 5 дней",
+                                reply_markup=main_keyboard(cb.from_user.id))
+        await cb.answer()
+        return
+    lines = ["⏰ <b>Истекают в ближайшие 5 дней:</b>\n"]
+    for name, expires, diff, disabled in sorted(soon, key=lambda x: x[2]):
+        status = "🔴" if disabled else "🟢"
+        emoji = "🔥" if diff <= 1 else "⚠️"
+        lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
+    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
     await cb.answer()
 
 @dp.callback_query(F.data == "all_users")
