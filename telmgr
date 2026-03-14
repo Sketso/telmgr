@@ -49,7 +49,6 @@ def write_toml(content):
         f.write(content)
 
 def get_users_from_toml(content):
-    """Возвращает dict {name: secret} активных и отключённых юзеров"""
     users = {}
     in_section = False
     for line in content.splitlines():
@@ -59,11 +58,9 @@ def get_users_from_toml(content):
         if in_section:
             if line.strip().startswith("["):
                 break
-            # Активный юзер
             m = re.match(r'^(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
             if m:
                 users[m.group(1)] = {"secret": m.group(2), "disabled": False}
-            # Отключённый юзер (закомментирован)
             m = re.match(r'^#\s*(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
             if m:
                 users[m.group(1)] = {"secret": m.group(2), "disabled": True}
@@ -73,7 +70,6 @@ def generate_secret():
     return subprocess.check_output(["openssl", "rand", "-hex", "16"]).decode().strip()
 
 def build_link(secret):
-    # EE-TLS ссылка: ee + secret + hex(domain)
     domain_hex = PUBLIC_HOST.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
     return f"https://t.me/proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
@@ -81,7 +77,7 @@ def build_link(secret):
 # === Команды ===
 def cmd_add(name, days=0):
     if not re.match(r'^\w+$', name):
-        err(f"Имя пользователя может содержать только буквы, цифры и _")
+        err("Имя пользователя может содержать только буквы, цифры и _")
 
     content = read_toml()
     users = get_users_from_toml(content)
@@ -91,21 +87,12 @@ def cmd_add(name, days=0):
 
     secret = generate_secret()
 
-    # Вставляем после [access.users]
-    new_content = content.replace(
-        "[access.users]",
-        f"[access.users]",
-    )
     lines = content.splitlines()
     result = []
-    in_section = False
     inserted = False
     for line in lines:
         result.append(line)
-        if line.strip() == "[access.users]":
-            in_section = True
-            continue
-        if in_section and not inserted:
+        if line.strip() == "[access.users]" and not inserted:
             result.append(f'{name} = "{secret}"')
             inserted = True
 
@@ -114,7 +101,6 @@ def cmd_add(name, days=0):
 
     write_toml("\n".join(result))
 
-    # Метаданные
     meta = load_meta()
     expires = None
     if days and int(days) > 0:
@@ -127,7 +113,6 @@ def cmd_add(name, days=0):
     }
     save_meta(meta)
 
-    # Cron если нужен
     if expires:
         add_cron(name, expires)
 
@@ -214,7 +199,7 @@ def cmd_limit(name, days):
 
     meta = load_meta()
     if name not in meta:
-        err(f"Метаданные для '{name}' не найдены")
+        err(f"Метаданные для '{name}' не найдены — используй: telmgr user import {name}")
 
     days = int(days)
     remove_cron(name)
@@ -250,7 +235,6 @@ def cmd_list():
         created = m.get("created", "—")
         expires = m.get("expires") or "∞"
 
-        # Проверяем не истёк ли
         if m.get("expires"):
             exp_date = datetime.strptime(m["expires"], "%Y-%m-%d")
             if exp_date < datetime.now() and not data["disabled"]:
@@ -272,6 +256,29 @@ def cmd_link(name):
 
     info(f"🔗 {build_link(secret)}")
 
+def cmd_import(name):
+    content = read_toml()
+    users = get_users_from_toml(content)
+
+    if name not in users:
+        err(f"Пользователь '{name}' не найден в конфиге")
+
+    meta = load_meta()
+    if name in meta:
+        warn(f"Пользователь '{name}' уже есть в метаданных")
+        return
+
+    secret = users[name]["secret"]
+    meta[name] = {
+        "secret": secret,
+        "created": datetime.now().strftime("%Y-%m-%d"),
+        "expires": None,
+        "disabled": users[name]["disabled"]
+    }
+    save_meta(meta)
+    ok(f"Пользователь '{name}' импортирован из конфига")
+    info(f"🔗 {build_link(secret)}")
+
 # === Cron ===
 def add_cron(name, expires_date):
     dt = datetime.strptime(expires_date, "%Y-%m-%d")
@@ -282,7 +289,6 @@ def add_cron(name, expires_date):
         f"# telmgr:{name}"
     )
     current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
-    # Убираем старую запись если есть
     lines = [l for l in current.splitlines() if f"# telmgr:{name}" not in l]
     lines.append(cron_line)
     new_cron = "\n".join(lines) + "\n"
@@ -307,11 +313,7 @@ def usage():
   telmgr user limit <name> <days>  Установить лимит (0 — снять)
   telmgr user list                 Список пользователей
   telmgr user link <name>          Показать ссылку
-
-Переменные окружения:
-  TELEMT_DIR    Путь к директории telemt (default: /root/telemt)
-  TELEMT_HOST   Публичный хост (default: your.domain.com)
-  TELEMT_PORT   Публичный порт (default: 2053)
+  telmgr user import <name>        Импортировать существующего юзера из конфига
 """)
 
 def main():
@@ -344,6 +346,9 @@ def main():
     elif cmd == "link":
         if len(args) < 3: err("Укажи имя пользователя")
         cmd_link(args[2])
+    elif cmd == "import":
+        if len(args) < 3: err("Укажи имя пользователя")
+        cmd_import(args[2])
     else:
         err(f"Неизвестная команда: {cmd}")
 
