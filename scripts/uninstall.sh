@@ -16,7 +16,7 @@ echo -e "\n${BOLD}=== telmgr uninstaller ===${RESET}\n"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}❌ Запусти от root${RESET}" && exit 1
 
-TELEMT_DIR="${TELEMT_DIR:-/root/telemt}"
+TELEMT_DIR="${TELEMT_DIR:-$HOME/telemt}"
 
 # Бэкап перед удалением
 read -p "Создать бэкап перед удалением? [Y/n]: " DO_BACKUP

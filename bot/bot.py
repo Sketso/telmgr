@@ -16,11 +16,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
 
-load_dotenv('/root/telemt/.env')
+load_dotenv(os.path.join(os.path.expanduser('~'), 'telemt', '.env'))
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 SUPER_ADMIN_ID = int(os.getenv('SUPER_ADMIN_ID'))
-ADMINS_PATH = os.getenv('TELEMT_DIR', '/root/telemt') + '/.telmgr-admins.json'
+ADMINS_PATH = os.path.join(os.getenv('TELEMT_DIR', os.path.join(os.path.expanduser('~'), 'telemt')), '.telmgr-admins.json')
 
 # Импортируем функции из telmgr
 import importlib.util

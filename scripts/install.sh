@@ -53,7 +53,7 @@ read -p "Введи имя первого пользователя [myproxy]: " 
 FIRST_USER=${FIRST_USER:-myproxy}
 
 # === Директория ===
-TELEMT_DIR="/root/telemt"
+TELEMT_DIR="${TELEMT_DIR:-$HOME/telemt}"
 mkdir -p "$TELEMT_DIR"
 ok "Директория $TELEMT_DIR создана"
 

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # === Конфиг ===
-TELEMT_DIR = os.environ.get("TELEMT_DIR", "/root/telemt")
+TELEMT_DIR = os.environ.get("TELEMT_DIR", os.path.join(os.path.expanduser("~"), "telemt"))
 TOML_PATH = os.path.join(TELEMT_DIR, "telemt.toml")
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")

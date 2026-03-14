@@ -96,3 +96,4 @@ journalctl -u telmgr-bot -f
 - Docker + Docker Compose
 - Python 3.10+
 - UFW (опционально)
+- Права root или sudo (рекомендуется запускать от root)
