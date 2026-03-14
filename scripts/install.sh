@@ -174,7 +174,7 @@ services:
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - ./.telmgr-admins.json:/app/data/.telmgr-admins.json
-	  - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
+      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
     environment:
       - TELEMT_DIR=/app/data
     env_file:
