@@ -174,6 +174,7 @@ services:
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - ./.telmgr-admins.json:/app/data/.telmgr-admins.json
+	  - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
     environment:
       - TELEMT_DIR=/app/data
     env_file:
@@ -266,9 +267,22 @@ fi
 cd "$TELEMT_DIR"
 docker compose up -d
 ok "Telemt запущен"
+
 if $INSTALL_BOT_ENABLED; then
-    ok "Бот запущен в Docker"
-    info "Логи бота: docker compose logs -f telmgr-bot"
+    info "Ожидаем запуска бота..."
+    sleep 15
+    BOT_STATUS=$(docker inspect --format='{{.State.Status}}' telmgr-bot 2>/dev/null)
+    BOT_LOGS=$(docker logs telmgr-bot 2>&1 | tail -5)
+    if echo "$BOT_LOGS" | grep -q "Бот запущен"; then
+        ok "Бот запущен в Docker"
+    elif [ "$BOT_STATUS" = "running" ]; then
+        ok "Бот запущен в Docker"
+        info "Логи: docker compose logs -f telmgr-bot"
+    else
+        warn "Бот не запустился! Проверь логи:"
+        echo "$BOT_LOGS"
+        warn "Логи: docker compose logs telmgr-bot"
+    fi
 fi
 
 # === Итог ===
