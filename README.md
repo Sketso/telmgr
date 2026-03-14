@@ -10,12 +10,10 @@
 
 ## Установка
 ```bash
-git clone https://github.com/Sketso/telmgr.git
-cd telmgr
-source scripts/install.sh
+bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/install.sh)
 ```
 
-Скрипт установит Docker (если нет), создаст конфиг, запустит прокси, установит `telmgr` и опционально настроит Telegram бота как systemd сервис.
+Скрипт установит Docker (если нет), создаст конфиг, запустит прокси и установит `telmgr`. Опционально настроит Telegram бота в Docker.
 
 > UFW не устанавливается автоматически — если он есть, порт откроется сам. Если нет — открой вручную.
 
@@ -23,7 +21,7 @@ source scripts/install.sh
 
 ## Удаление
 ```bash
-bash scripts/uninstall.sh
+bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/uninstall.sh)
 ```
 
 Скрипт предложит создать бэкап перед удалением.
@@ -45,7 +43,7 @@ telmgr user import <name>          # импортировать существу
 telmgr user expire [days]          # юзеры с истекающим сроком (default: 7 дней)
 ```
 
-При добавлении с лимитом — автоматически создаётся cron на отключение пользователя.
+При добавлении с лимитом через CLI — автоматически создаётся cron на отключение пользователя.
 
 ### Админы
 ```bash
@@ -71,22 +69,25 @@ telmgr restore <file>              # восстановить из бэкапа
 
 Устанавливается опционально через `install.sh`. Для создания бота — [@BotFather](https://t.me/BotFather), для получения своего Telegram ID — [@userinfobot](https://t.me/userinfobot).
 
-Запускается как systemd сервис `telmgr-bot`. Управление:
+Запускается в Docker вместе с прокси. Управление:
 ```bash
-systemctl status telmgr-bot
-systemctl restart telmgr-bot
-journalctl -u telmgr-bot -f
+docker compose -f ~/telemt/docker-compose.yml logs -f telmgr-bot
+docker compose -f ~/telemt/docker-compose.yml restart telmgr-bot
 ```
 
 ---
 
-## Переменные окружения
+## Конфигурация
+
+Все настройки хранятся в `~/telemt/.env`:
 
 | Переменная | Обязательная | Описание |
 |---|---|---|
 | `TELEMT_HOST` | ✅ | Публичный домен или IP сервера |
-| `TELEMT_DIR` | — | Путь к директории с конфигом (default: `/root/telemt`) |
 | `TELEMT_PORT` | — | Публичный порт прокси (default: `2053`) |
+| `TELEMT_DIR` | — | Путь к директории с конфигом (default: `~/telemt`) |
+| `BOT_TOKEN` | — | Токен Telegram бота от @BotFather |
+| `SUPER_ADMIN_ID` | — | Telegram ID суперадмина |
 
 ---
 
@@ -96,4 +97,4 @@ journalctl -u telmgr-bot -f
 - Docker + Docker Compose
 - Python 3.10+
 - UFW (опционально)
-- Права root или sudo (рекомендуется запускать от root)
+- Права root (рекомендуется)
