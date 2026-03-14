@@ -1,201 +1,75 @@
-# 🐳 telemt-docker
+# telmgr
 
-[![Docker Image Size](https://img.shields.io/docker/image-size/whn0thacked/telemt-docker?style=flat-square&logo=docker&color=blue)](https://hub.docker.com/r/whn0thacked/telemt-docker)
-[![Docker Pulls](https://img.shields.io/docker/pulls/whn0thacked/telemt-docker?style=flat-square&logo=docker)](https://hub.docker.com/r/whn0thacked/telemt-docker)
-[![Architecture](https://img.shields.io/badge/arch-amd64%20%7C%20arm64-important?style=flat-square)](#)
-[![Security: non-root](https://img.shields.io/badge/security-non--root-success?style=flat-square)](#)
-[![Base Image](https://img.shields.io/badge/base-distroless%2Fstatic%3Anonroot-blue?style=flat-square)](https://github.com/GoogleContainerTools/distroless)
-[![Upstream](https://img.shields.io/badge/upstream-telemt-orange?style=flat-square)](https://github.com/telemt/telemt)
+Менеджер пользователей для [Telemt MTProxy](https://github.com/telemt/telemt) — быстрого MTProto прокси для Telegram на Rust.
 
-A minimal, secure, and production-oriented Docker image for **Telemt** — a fast MTProto proxy server (MTProxy) written in **Rust + Tokio**.
+Форк [An0nX/telemt-docker](https://github.com/An0nX/telemt-docker) с добавленным CLI для управления пользователями.
 
-Built as a **fully static** binary and shipped in a **distroless** runtime image, running as **non-root** by default.
+> 🤖 Проект создавался совместно с AI (Claude, Anthropic).
 
 ---
 
-## ✨ Features
+## Быстрый старт
 
-- **🔐 Secure by default:** Distroless runtime + non-root user.
-- **🏗 Multi-arch:** Supports `amd64` and `arm64`.
-- **📦 Fully static binary:** Designed for `gcr.io/distroless/static:nonroot`.
-- **🧾 Config-driven:** You mount a single `/etc/telemt.toml` and go.
-- **📈 Metrics-ready:** Supports Telemt metrics port (`9090`) via config.
-- **🧰 Build-time pinning:** Upstream repo/ref are configurable via build args.
-
----
-
-## ⚠️ Important Notice
-
-Telemt is a Telegram proxy (MTProto). Operating proxies may be restricted or monitored depending on your country/ISP and may carry legal/operational risks.
-
-You are responsible for compliance with local laws and for safe deployment (firewalling, access control, logs, monitoring).
-
----
-
-## 🚀 Quick Start (Docker Compose)
-
-### 1. Generate a Secret
-Telemt users require a **32-hex-char secret** (16 bytes):
+### 1. Генерируем секрет и создаём конфиг
 
 ```bash
+mkdir -p ~/telemt && cd ~/telemt
 openssl rand -hex 16
 ```
 
-### 2. Create `telemt.toml`
+Создай `telemt.toml` (см. [пример конфига](telemt.toml.example)).
 
-Refer to the upstream repository for the configuration format and examples:
-
-👉 **https://github.com/telemt/telemt**
-
-Place your configuration file as `./telemt.toml`.
-
-### 3. Create `docker-compose.yml`
-
-> Note: the container runs as **non-root**, but Telemt binds to **443** by default.  
-> To allow binding to privileged ports, we add `NET_BIND_SERVICE`.
-
-```yaml
-services:
-  telemt:
-    image: whn0thacked/telemt-docker:latest
-    container_name: telemt
-    restart: unless-stopped
-
-    # Telemt uses RUST_LOG for verbosity (optional)
-    environment:
-      RUST_LOG: "info"
-
-    # Telemt reads config from CMD (default: /etc/telemt.toml)
-    volumes:
-      - ./telemt.toml:/etc/telemt.toml:ro
-
-    ports:
-      - "443:443/tcp"
-      # If you enable metrics_port=9090 in config:
-      # - "127.0.0.1:9090:9090/tcp"
-
-    # Hardening
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=16m
-
-    # Mount to host machine
-    network_mode: host
-
-    # Resource limits (optional)
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 256M
-        reservations:
-          cpus: "0.25"
-          memory: 128M
-
-    # File descriptor limits (critical for a high-load server!)
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-```
-
-### 4. Start
+### 2. Запускаем прокси
 
 ```bash
 docker compose up -d
-```
-
-Logs:
-
-```bash
 docker compose logs -f
 ```
 
----
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Mandatory | Default | Description |
-|---|:---:|---|---|
-| `RUST_LOG` | No | — | Telemt log level (e.g. `info`, `debug`, `trace`). |
-
-### Volumes
-
-| Container Path | Purpose |
-|---|---|
-| **`/etc/telemt.toml`** | Main Telemt configuration file (you mount it from the host). |
-
-### Ports
-
-| Port | Purpose |
-|---:|---|
-| `443/tcp` | Main MTProxy listener (commonly used for TLS-like traffic). |
-| `9090/tcp` | Metrics port (only if enabled in `telemt.toml`). |
-
----
-
-## 🧠 Container Behavior
-
-- **ENTRYPOINT:** `telemt`
-- **CMD (default):** `/etc/telemt.toml`
-
-So the container effectively runs:
-
-```text
-telemt /etc/telemt.toml
-```
-
-To use a different config path, override the command:
+### 3. Устанавливаем telmgr
 
 ```bash
-docker run ... whn0thacked/telemt-docker:latest /path/to/config.toml
+git clone https://github.com/Sketso/telmgr.git
+cp telmgr/telmgr /usr/local/bin/telmgr
+chmod +x /usr/local/bin/telmgr
+```
+
+### 4. Открываем порт
+
+```bash
+sudo ufw allow 2053/tcp comment "Telemt MTProxy"
 ```
 
 ---
 
-## 🛠 Build
-
-This Dockerfile supports pinning upstream Telemt source:
-
-- `TELEMT_REPO` (default: `https://github.com/telemt/telemt.git`)
-- `TELEMT_REF` (default: `main`)
-
-### Multi-arch build (amd64 + arm64)
+## telmgr — управление пользователями
 
 ```bash
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t whn0thacked/telemt-docker:latest \
-  --push .
+telmgr user list                   # список пользователей
+telmgr user add <name> [days]      # добавить (days=0 — бессрочно)
+telmgr user delete <name>          # удалить
+telmgr user disable <name>         # отключить
+telmgr user enable <name>          # включить
+telmgr user limit <name> <days>    # установить лимит (0 — снять)
+telmgr user link <name>            # показать ссылку для подключения
+telmgr user import <name>          # импортировать существующего юзера из конфига
 ```
 
-### Build a specific upstream tag/branch/commit
+При добавлении с лимитом — автоматически создаётся cron на отключение пользователя.
 
-```bash
-docker buildx build \
-  --build-arg TELEMT_REF=v1.1.0.0 \
-  -t whn0thacked/telemt-docker:v1.1.0.0 \
-  --push .
-```
+### Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `TELEMT_DIR` | `/root/telemt` | Путь к директории с конфигом |
+| `TELEMT_HOST` | `your.domain.com` | Публичный хост прокси |
+| `TELEMT_PORT` | `2053` | Публичный порт прокси |
 
 ---
 
-## 🔗 Useful Links
+## Требования
 
-- **Telemt upstream:** https://github.com/telemt/telemt
-- **MTProxy ad tag bot:** https://t.me/mtproxybot
-- **Distroless images:** https://github.com/GoogleContainerTools/distroless
+- Ubuntu 22.04 / 24.04
+- Docker + Docker Compose
+- Python 3.10+
+- UFW
