@@ -240,7 +240,7 @@ async def cb_add_user(cb: CallbackQuery, state: FSMContext):
 async def add_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
     if not re.match(r'^[a-zA-Z0-9_]+$', name):
-        await message.answer("❌ Только буквы, цифры и _")
+        await message.answer("❌ Только латинские буквы, цифры и _ (кириллица не поддерживается)")
         return
     await state.update_data(name=name)
     await message.answer("На сколько дней? (0 = бессрочно):")
