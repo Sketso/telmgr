@@ -5,7 +5,7 @@ import os
 import sys
 import re
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timedelta as _td
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -31,7 +31,7 @@ assert spec.loader is not None
 spec.loader.exec_module(telmgr)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher(storage=MemoryStorage(ttl=_td(minutes=10)))
 
 
 # === Admins storage ===
@@ -449,7 +449,7 @@ async def cb_expiring_users(cb: CallbackQuery):
     meta = telmgr.load_meta()
     content = telmgr.read_toml()
     toml_users = telmgr.get_users_from_toml(content)
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timedelta as _td
     soon = []
     for name, data in meta.items():
         if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
