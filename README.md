@@ -1,10 +1,18 @@
 # telmgr
 
-Менеджер пользователей для [Telemt MTProxy](https://github.com/telemt/telemt) — быстрого MTProto прокси для Telegram на Rust.
+Инструмент управления пользователями для [Telemt](https://github.com/telemt/telemt) — MTProto прокси-сервера на Rust.
 
 Форк [An0nX/telemt-docker](https://github.com/An0nX/telemt-docker) с добавленным CLI и Telegram ботом для управления пользователями.
 
-> 🤖 Проект создавался совместно с AI (Claude, Anthropic).
+> 🤖 Проект создавался совместно с AI (Claude, Anthropic) в учебных целях.
+
+---
+
+## ⚠️ Отказ от ответственности
+
+Этот проект создан исключительно в **образовательных целях** для изучения DevOps практик, Docker, Python и разработки CLI инструментов.
+
+Использование MTProto прокси может быть ограничено или запрещено законодательством вашей страны. Вы несёте полную ответственность за соблюдение применимых местных законов и нормативных актов. Авторы проекта не несут ответственности за любое использование данного программного обеспечения.
 
 ---
 
@@ -13,7 +21,7 @@
 bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/install.sh)
 ```
 
-Скрипт установит Docker (если нет), создаст конфиг, запустит прокси и установит `telmgr`. Опционально настроит Telegram бота в Docker.
+Скрипт установит Docker (если нет), создаст конфиг, запустит сервис и установит `telmgr`. Опционально настроит Telegram бота в Docker.
 
 > UFW не устанавливается автоматически — если он есть, порт откроется сам. Если нет — открой вручную.
 
@@ -52,14 +60,14 @@ telmgr admin delete <telegram_id>  # удалить админа
 
 ### Прокси
 ```bash
-telmgr status                      # статус контейнера и статистика
+telmgr status                      # статус сервиса и статистика
 telmgr logs [lines]                # логи контейнера (default: 50)
 telmgr update                      # обновить Docker образ
 telmgr backup                      # создать бэкап
 telmgr restore <file>              # восстановить из бэкапа
 ```
 
-> При восстановлении на новом сервере домен должен совпадать с оригинальным — иначе ссылки пользователей перестанут работать.
+> При восстановлении на новом сервере домен должен совпадать с оригинальным.
 
 ---
 
@@ -67,7 +75,7 @@ telmgr restore <file>              # восстановить из бэкапа
 
 Устанавливается опционально через `install.sh`. Для создания бота — [@BotFather](https://t.me/BotFather), для получения своего Telegram ID — [@userinfobot](https://t.me/userinfobot).
 
-Запускается в Docker вместе с прокси. Управление:
+Запускается в Docker вместе с сервисом. Управление:
 ```bash
 docker compose -f ~/telemt/docker-compose.yml logs -f telmgr-bot
 docker compose -f ~/telemt/docker-compose.yml restart telmgr-bot
@@ -82,7 +90,7 @@ docker compose -f ~/telemt/docker-compose.yml restart telmgr-bot
 | Переменная | Обязательная | Описание |
 |---|---|---|
 | `TELEMT_HOST` | ✅ | Публичный домен или IP сервера |
-| `TELEMT_PORT` | — | Публичный порт прокси (default: `2053`) |
+| `TELEMT_PORT` | — | Публичный порт (default: `2053`) |
 | `TELEMT_DIR` | — | Путь к директории с конфигом (default: `~/telemt`) |
 | `BOT_TOKEN` | — | Токен Telegram бота от @BotFather |
 | `SUPER_ADMIN_ID` | — | Telegram ID суперадмина |
