@@ -59,9 +59,32 @@ def read_toml():
         return f.read()
 
 def write_toml(content):
-    with open(TOML_PATH, "w") as f:
-        f.write(content)
+    # Валидация через tomllib перед записью
+    try:
+        import tomllib
+        tomllib.loads(content)
+    except Exception as e:
+        err(f"Невалидный TOML после изменений: {e}")
 
+    # Бэкап текущего файла
+    backup = TOML_PATH + ".bak"
+    if os.path.exists(TOML_PATH):
+        with open(TOML_PATH) as f:
+            old_content = f.read()
+        with open(backup, "w") as f:
+            f.write(old_content)
+
+    try:
+        with open(TOML_PATH, "w") as f:
+            f.write(content)
+    except Exception as e:
+        # Откат
+        if os.path.exists(backup):
+            with open(backup) as f:
+                old = f.read()
+            with open(TOML_PATH, "w") as f:
+                f.write(old)
+        err(f"Ошибка записи конфига, откат выполнен: {e}")
 def get_users_from_toml(content):
     users = {}
     in_section = False

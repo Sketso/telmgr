@@ -321,7 +321,13 @@ async def delete_user_name(message: Message, state: FSMContext):
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
     except (SystemExit, Exception) as e:
-        await message.answer("❌ Юзер '" + name + "' не найден")
+        error_msg = str(e)
+        await message.answer("❌ Ошибка: " + error_msg)
+        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
+            try:
+                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
+            except Exception:
+                pass
     await state.clear()
 
 @dp.callback_query(F.data == "toggle_user")
@@ -349,7 +355,13 @@ async def toggle_user_name(message: Message, state: FSMContext):
             await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
     except (SystemExit, Exception) as e:
-        await message.answer("❌ Ошибка: " + str(e))
+        error_msg = str(e)
+        await message.answer("❌ Ошибка: " + error_msg)
+        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
+            try:
+                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
+            except Exception:
+                pass
     await state.clear()
 
 @dp.callback_query(F.data == "limit_user")
@@ -383,7 +395,13 @@ async def limit_user_days(message: Message, state: FSMContext):
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
     except (SystemExit, Exception) as e:
-        await message.answer("❌ Ошибка — проверь имя юзера")
+        error_msg = str(e)
+        await message.answer("❌ Ошибка: " + error_msg)
+        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
+            try:
+                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
+            except Exception:
+                pass
     await state.clear()
 
 @dp.callback_query(F.data == "link_user")
