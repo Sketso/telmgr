@@ -37,13 +37,11 @@ telmgr user add <name> [days]      # добавить (days=0 — бессроч
 telmgr user delete <name>          # удалить
 telmgr user disable <name>         # отключить
 telmgr user enable <name>          # включить
-telmgr user limit <name> <days>    # установить лимит (0 — снять)
+telmgr user limit <name> <days>    # установить лимит (0 — снять и включить)
 telmgr user link <name>            # показать ссылку для подключения
 telmgr user import <name>          # импортировать существующего юзера из конфига
 telmgr user expire [days]          # юзеры с истекающим сроком (default: 7 дней)
 ```
-
-При добавлении с лимитом через CLI — автоматически создаётся cron на отключение пользователя (только при запуске на хосте, не в Docker).
 
 ### Админы
 ```bash
