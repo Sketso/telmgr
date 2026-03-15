@@ -93,7 +93,7 @@ def build_link(secret):
 # === Команды ===
 def cmd_add(name, days=0):
     if not re.match(r'^[a-zA-Z0-9_]+$', name):
-        err("Имя пользователя может содержать только буквы, цифры и _")
+        err("Имя пользователя может содержать только латинские буквы, цифры и _ (кириллица не поддерживается)")
 
     content = read_toml()
     users = get_users_from_toml(content)
