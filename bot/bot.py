@@ -239,7 +239,7 @@ async def cb_add_user(cb: CallbackQuery, state: FSMContext):
 @dp.message(AddUser.waiting_name)
 async def add_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
-    if not re.match(r'^\w+$', name):
+    if not re.match(r'^[a-zA-Z0-9_]+$', name):
         await message.answer("❌ Только буквы, цифры и _")
         return
     await state.update_data(name=name)
