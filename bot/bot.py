@@ -320,7 +320,7 @@ async def delete_user_name(message: Message, state: FSMContext):
         telmgr.cmd_delete(name)
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
-    except SystemExit:
+    except (SystemExit, Exception) as e:
         await message.answer("❌ Юзер '" + name + "' не найден")
     await state.clear()
 
@@ -348,8 +348,8 @@ async def toggle_user_name(message: Message, state: FSMContext):
             telmgr.cmd_disable(name)
             await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except SystemExit:
-        await message.answer("❌ Ошибка")
+    except (SystemExit, Exception) as e:
+        await message.answer("❌ Ошибка: " + str(e))
     await state.clear()
 
 @dp.callback_query(F.data == "limit_user")
@@ -382,7 +382,7 @@ async def limit_user_days(message: Message, state: FSMContext):
             expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except SystemExit:
+    except (SystemExit, Exception) as e:
         await message.answer("❌ Ошибка — проверь имя юзера")
     await state.clear()
 
