@@ -232,28 +232,38 @@ def cmd_enable(name):
 def cmd_limit(name, days):
     content = read_toml()
     users = get_users_from_toml(content)
-
     if name not in users:
         err(f"Пользователь '{name}' не найден")
-
     meta = load_meta()
     if name not in meta:
         err(f"Метаданные для '{name}' не найдены — используй: telmgr user import {name}")
-
-    days = int(days)
+    try:
+        days = int(days)
+    except (ValueError, TypeError):
+        err("Количество дней должно быть числом")
+    if days < 0:
+        err("Количество дней не может быть отрицательным")
     remove_cron(name)
-
     if days == 0:
         meta[name]["expires"] = None
         save_meta(meta)
         ok(f"Лимит для '{name}' снят — пользователь теперь бессрочный")
         return
-
+    # Auto-enable если был отключён
+    if users[name]["disabled"]:
+        new_content = re.sub(
+            rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+            r'\1',
+            content,
+            flags=re.MULTILINE
+        )
+        write_toml(new_content)
+        meta[name]["disabled"] = False
+        info(f"Пользователь '{name}' автоматически включён")
     expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
     meta[name]["expires"] = expires
     save_meta(meta)
     add_cron(name, expires)
-
     ok(f"Лимит установлен: '{name}' будет отключён {expires}")
 
 def cmd_list():

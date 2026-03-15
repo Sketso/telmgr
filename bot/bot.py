@@ -416,6 +416,9 @@ async def limit_user_days(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введи число")
         return
+    if days < 0:
+        await message.answer("❌ Количество дней не может быть отрицательным")
+        return
     data = await state.get_data()
     name = data['name']
     try:
