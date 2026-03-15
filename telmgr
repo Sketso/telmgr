@@ -246,7 +246,18 @@ def cmd_limit(name, days):
     remove_cron(name)
     if days == 0:
         meta[name]["expires"] = None
+        meta[name]["disabled"] = False
         save_meta(meta)
+        # Auto-enable если был отключён
+        if users[name]["disabled"]:
+            new_content = re.sub(
+                rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+                r'\1',
+                content,
+                flags=re.MULTILINE
+            )
+            write_toml(new_content)
+            info(f"Пользователь '{name}' автоматически включён")
         ok(f"Лимит для '{name}' снят — пользователь теперь бессрочный")
         return
     # Auto-enable если был отключён
