@@ -15,6 +15,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.date import DateTrigger
 
 load_dotenv(os.path.join(os.path.expanduser('~'), 'telemt', '.env'))
 
@@ -31,8 +33,39 @@ assert spec.loader is not None
 spec.loader.exec_module(telmgr)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage(ttl=_td(minutes=10)))
+dp = Dispatcher(storage=MemoryStorage())
+scheduler = AsyncIOScheduler()
 
+# === Scheduler ===
+async def disable_user_job(name: str, admin_id: int):
+    try:
+        telmgr.cmd_disable(name)
+        await bot.send_message(admin_id, "⏰ Лимит истёк — юзер <b>" + name + "</b> отключён", parse_mode="HTML")
+    except Exception as e:
+        try:
+            await bot.send_message(SUPER_ADMIN_ID, "❌ Ошибка при автоотключении юзера " + name + ": " + str(e))
+        except Exception:
+            pass
+
+def schedule_user_disable(name: str, expires: str, admin_id: int):
+    dt = datetime.strptime(expires, "%Y-%m-%d").replace(hour=12, minute=0)
+    if dt > datetime.now():
+        job_id = "disable_" + name
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+        scheduler.add_job(
+            disable_user_job,
+            trigger=DateTrigger(run_date=dt),
+            args=[name, admin_id],
+            id=job_id
+        )
+
+def load_scheduled_jobs():
+    meta = telmgr.load_meta()
+    for name, data in meta.items():
+        if data.get('expires') and not data.get('disabled'):
+            admin_id = data.get('admin_id') or SUPER_ADMIN_ID
+            schedule_user_disable(name, data['expires'], admin_id)
 
 # === Admins storage ===
 
@@ -388,10 +421,14 @@ async def limit_user_days(message: Message, state: FSMContext):
     try:
         telmgr.cmd_limit(name, days)
         if days == 0:
+            job_id = "disable_" + name
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
             await message.answer("✅ Лимит для <b>" + name + "</b> снят", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
         else:
             expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+            schedule_user_disable(name, expires, message.from_user.id)
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
     except (SystemExit, Exception) as e:
@@ -403,7 +440,7 @@ async def limit_user_days(message: Message, state: FSMContext):
             except Exception:
                 pass
     await state.clear()
-
+    
 @dp.callback_query(F.data == "link_user")
 async def cb_link_user(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer("Введи имя юзера:")
@@ -654,6 +691,8 @@ async def cb_revoke_keep_users(cb: CallbackQuery):
     await cb.answer()
 
 async def main():
+    load_scheduled_jobs()
+    scheduler.start()
     print("Бот запущен...")
     await dp.start_polling(bot)
 

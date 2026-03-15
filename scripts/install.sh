@@ -180,7 +180,7 @@ services:
     env_file:
       - .env
     command: >
-      sh -c "pip install aiogram python-dotenv --quiet &&
+      sh -c "pip install aiogram python-dotenv apscheduler --quiet &&
              python3 bot.py"
     logging:
       driver: json-file
