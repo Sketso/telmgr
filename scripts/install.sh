@@ -38,7 +38,16 @@ fi
 if command -v python3 &>/dev/null; then
     ok "Python3 найден"
 else
-    err "Python3 не найден — установи его вручную: apt install python3"
+    info "Устанавливаем Python3..."
+    apt-get install -y python3 -q
+    ok "Python3 установлен"
+fi
+
+# === pip3 ===
+if ! command -v pip3 &>/dev/null; then
+    info "Устанавливаем python3-pip..."
+    apt-get install -y python3-pip -q
+    ok "python3-pip установлен"
 fi
 
 # === Запрашиваем параметры ===
