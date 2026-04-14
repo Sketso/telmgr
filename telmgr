@@ -514,15 +514,16 @@ def cmd_restore(backup_file):
         err(f"Файл не найден: {backup_file}")
     warn(f"Восстановление из {backup_file}")
     warn(f"Убедись что домен сервера совпадает с оригинальным!")
-    confirm = input("Продолжить? [y/N]: ")
+    sys.stdout.write("Продолжить? [y/N]: ")
+    sys.stdout.flush()
+    confirm = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
     if confirm.lower() != 'y':
         info("Отменено")
         return
     with tarfile.open(backup_file, "r:gz") as tar:
         tar.extractall(TELEMT_DIR)
     ok("Файлы восстановлены")
-    info("Перезапусти контейнер: docker compose restart")
-    info("Перезапусти бота: systemctl restart telmgr-bot")
+    info(f"Перезапусти контейнеры: docker compose -f {TELEMT_DIR}/docker-compose.yml restart")
 
 def usage():
     print(f"""
