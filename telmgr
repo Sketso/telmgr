@@ -451,6 +451,32 @@ def cmd_status():
     print(f"Аптайм:    {hours}ч {minutes}м")
     print(f"Хост:      {PUBLIC_HOST}:{PUBLIC_PORT}")
     print(f"Юзеры:     {GREEN}{active} active{RESET} / {RED}{disabled} disabled{RESET}")
+
+    bot_result = subprocess.run(
+        ["docker", "inspect", "--format",
+         "{{.State.Status}} {{.State.StartedAt}}", "telmgr-bot"],
+        capture_output=True, text=True
+    )
+    if bot_result.returncode == 0:
+        bot_status, bot_started_at = bot_result.stdout.strip().split(" ", 1)
+        bot_started_dt = datetime.fromisoformat(bot_started_at[:19])
+        bot_uptime = datetime.now() - bot_started_dt
+        bot_hours, bot_rem = divmod(int(bot_uptime.total_seconds()), 3600)
+        bot_minutes = bot_rem // 60
+
+        admins_count = 0
+        if os.path.exists(ADMINS_PATH):
+            try:
+                with open(ADMINS_PATH) as f:
+                    admins_data = json.load(f)
+                admins_count = len(admins_data.get("admins", {}))
+            except Exception:
+                pass
+
+        print(f"\n{BOLD}=== Telegram Bot ==={RESET}")
+        print(f"Статус:    {GREEN}running{RESET}" if bot_status == "running" else f"Статус:    {RED}{bot_status}{RESET}")
+        print(f"Аптайм:    {bot_hours}ч {bot_minutes}м")
+        print(f"Админов:   {admins_count}")
     print()
 
 def cmd_logs(lines=50):
