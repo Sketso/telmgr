@@ -480,7 +480,7 @@ def cmd_expire(days=7):
         print(f"  {color}{name}{RESET} — {expires} (через {diff} дн.) [{status}]")
     print()
 
-def cmd_update():
+def cmd_coreupdate():
     info("Обновляем Docker образ...")
     subprocess.run(["docker", "pull", "whn0thacked/telemt-docker:latest"], check=True)
     info("Перезапускаем контейнер...")
@@ -490,7 +490,7 @@ def cmd_update():
 GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
 TELMGR_BIN = "/usr/local/bin/telmgr"
 
-def cmd_selfupdate():
+def cmd_update():
     import urllib.request, shutil, tempfile, stat
 
     if os.geteuid() != 0:
@@ -582,8 +582,8 @@ def usage():
 
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера (default: 50)
-  telmgr update                     Обновить Docker образ
-  telmgr selfupdate                 Обновить telmgr и bot.py с GitHub
+  telmgr update                     Обновить telmgr и bot.py с GitHub
+  telmgr coreupdate                 Обновить Docker образ прокси (telemt)
   telmgr backup                     Создать бэкап
   telmgr restore <file>             Восстановить из бэкапа
 """)
@@ -607,8 +607,8 @@ def main():
     elif section == "update":
         cmd_update()
         return
-    elif section == "selfupdate":
-        cmd_selfupdate()
+    elif section == "coreupdate":
+        cmd_coreupdate()
         return
     elif section == "backup":
         cmd_backup()
