@@ -487,6 +487,42 @@ def cmd_update():
     subprocess.run(["docker", "compose", "up", "-d"], cwd=TELEMT_DIR, check=True)
     ok("Обновление завершено!")
 
+GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
+TELMGR_BIN = "/usr/local/bin/telmgr"
+
+def cmd_selfupdate():
+    import urllib.request, shutil, tempfile, stat
+
+    if os.geteuid() != 0:
+        err("Запусти от root")
+
+    info("Обновляем telmgr...")
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        with urllib.request.urlopen(f"{GITHUB_RAW}/telmgr") as resp:
+            tmp.write(resp.read())
+        tmp_path = tmp.name
+    os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    shutil.move(tmp_path, TELMGR_BIN)
+    shutil.copy(TELMGR_BIN, TELMGR_BIN + ".py")
+    ok("telmgr обновлён")
+
+    bot_path = os.path.join(TELEMT_DIR, "bot.py")
+    if os.path.exists(bot_path):
+        info("Обновляем bot.py...")
+        with urllib.request.urlopen(f"{GITHUB_RAW}/bot/bot.py") as resp:
+            content = resp.read()
+        with open(bot_path, "wb") as f:
+            f.write(content)
+        ok("bot.py обновлён")
+        info("Перезапускаем telmgr-bot...")
+        subprocess.run(
+            ["docker", "compose", "restart", "telmgr-bot"],
+            cwd=TELEMT_DIR, check=False
+        )
+        ok("telmgr-bot перезапущен")
+    else:
+        info("bot.py не найден — пропускаем")
+
 def cmd_backup():
     import tarfile
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -547,6 +583,7 @@ def usage():
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера (default: 50)
   telmgr update                     Обновить Docker образ
+  telmgr selfupdate                 Обновить telmgr и bot.py с GitHub
   telmgr backup                     Создать бэкап
   telmgr restore <file>             Восстановить из бэкапа
 """)
@@ -569,6 +606,9 @@ def main():
         return
     elif section == "update":
         cmd_update()
+        return
+    elif section == "selfupdate":
+        cmd_selfupdate()
         return
     elif section == "backup":
         cmd_backup()
