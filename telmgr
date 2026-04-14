@@ -523,6 +523,109 @@ def cmd_update():
     else:
         info("bot.py не найден — пропускаем")
 
+def cmd_bot_setup():
+    import urllib.request
+
+    if os.geteuid() != 0:
+        err("Запусти от root")
+
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=telmgr-bot", "--format", "{{.Names}}"],
+        capture_output=True, text=True
+    )
+    if "telmgr-bot" in result.stdout:
+        warn("Бот уже установлен (контейнер telmgr-bot существует)")
+        sys.stdout.write("Переустановить? [y/N]: ")
+        sys.stdout.flush()
+        ans = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
+        if ans.lower() != 'y':
+            info("Отменено")
+            return
+
+    sys.stdout.write("Введи BOT_TOKEN от @BotFather: ")
+    sys.stdout.flush()
+    bot_token = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
+    if not bot_token:
+        err("BOT_TOKEN не может быть пустым")
+
+    sys.stdout.write("Введи свой Telegram ID (суперадмин): ")
+    sys.stdout.flush()
+    super_admin_id = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
+    if not super_admin_id:
+        err("SUPER_ADMIN_ID не может быть пустым")
+
+    info("Скачиваем bot.py...")
+    bot_path = os.path.join(TELEMT_DIR, "bot.py")
+    with urllib.request.urlopen(f"{GITHUB_RAW}/bot/bot.py") as resp:
+        content = resp.read()
+    with open(bot_path, "wb") as f:
+        f.write(content)
+    ok("bot.py скачан")
+
+    env_path = os.path.join(TELEMT_DIR, ".env")
+    with open(env_path, "r") as f:
+        env_lines = f.read().splitlines()
+    env_lines = [l for l in env_lines if not l.startswith("BOT_TOKEN=") and not l.startswith("SUPER_ADMIN_ID=")]
+    env_lines += [f"BOT_TOKEN={bot_token}", f"SUPER_ADMIN_ID={super_admin_id}"]
+    with open(env_path, "w") as f:
+        f.write("\n".join(env_lines) + "\n")
+    ok(".env обновлён")
+
+    compose_path = os.path.join(TELEMT_DIR, "docker-compose.yml")
+    with open(compose_path, "r") as f:
+        compose_content = f.read()
+    if "telmgr-bot" not in compose_content:
+        bot_service = (
+            "\n"
+            "  telmgr-bot:\n"
+            "    image: python:3.11-slim\n"
+            "    container_name: telmgr-bot\n"
+            "    restart: unless-stopped\n"
+            "    working_dir: /app\n"
+            "    volumes:\n"
+            "      - ./bot.py:/app/bot.py:ro\n"
+            "      - ./.env:/app/.env:ro\n"
+            "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
+            "      - ./.telmgr-admins.json:/app/data/.telmgr-admins.json\n"
+            "      - ./telemt.toml:/app/data/telemt.toml\n"
+            "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
+            "    environment:\n"
+            "      - TELEMT_DIR=/app/data\n"
+            "    env_file:\n"
+            "      - .env\n"
+            "    command: >\n"
+            '      sh -c "pip install aiogram python-dotenv apscheduler --quiet &&\n'
+            '             python3 bot.py"\n'
+            "    logging:\n"
+            "      driver: json-file\n"
+            "      options:\n"
+            '        max-size: "10m"\n'
+            '        max-file: "3"\n'
+        )
+        with open(compose_path, "a") as f:
+            f.write(bot_service)
+        ok("docker-compose.yml обновлён")
+
+    admins_path = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
+    if not os.path.exists(admins_path):
+        admins = {
+            "admins": {
+                super_admin_id: {
+                    "username": None,
+                    "full_name": "superadmin",
+                    "is_super": True
+                }
+            },
+            "pending": {}
+        }
+        with open(admins_path, "w") as f:
+            json.dump(admins, f, indent=2)
+        ok(".telmgr-admins.json создан")
+
+    info("Запускаем telmgr-bot...")
+    subprocess.run(["docker", "compose", "up", "-d", "telmgr-bot"], cwd=TELEMT_DIR, check=True)
+    ok("Бот установлен и запущен!")
+
 def cmd_backup():
     import tarfile
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -579,6 +682,8 @@ def usage():
   telmgr admin list                 Список админов
   telmgr admin add <telegram_id>    Добавить админа
   telmgr admin delete <telegram_id> Удалить админа
+
+  telmgr bot setup                  Подключить Telegram бота к существующей установке
 
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера (default: 50)
@@ -663,6 +768,11 @@ def main():
         elif cmd == "delete":
             if len(args) < 3: err("Укажи Telegram ID")
             cmd_admin_delete(args[2])
+        else:
+            err(f"Неизвестная команда: {cmd}")
+    elif section == "bot":
+        if cmd == "setup":
+            cmd_bot_setup()
         else:
             err(f"Неизвестная команда: {cmd}")
     else:
