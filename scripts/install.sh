@@ -206,6 +206,7 @@ $TELEMT_SERVICE
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - ./.telmgr-admins.json:/app/data/.telmgr-admins.json
+      - ./.telmgr-servers.json:/app/data/.telmgr-servers.json
       - ./telemt.toml:/app/data/telemt.toml
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
     environment:

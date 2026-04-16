@@ -641,6 +641,7 @@ def _cmd_bot_setup_master():
             "      - ./.env:/app/.env:ro\n"
             "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
             "      - ./.telmgr-admins.json:/app/data/.telmgr-admins.json\n"
+            "      - ./.telmgr-servers.json:/app/data/.telmgr-servers.json\n"
             "      - ./telemt.toml:/app/data/telemt.toml\n"
             "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
             "    environment:\n"
