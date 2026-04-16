@@ -982,21 +982,24 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "Not found"}, 404)
 
     def _handle_status(self):
-        result = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
-            capture_output=True, text=True
-        )
         proxy_status = "unknown"
         uptime_seconds = 0
-        if result.returncode == 0:
-            parts = result.stdout.strip().split(" ", 1)
-            proxy_status = parts[0]
-            if len(parts) > 1:
-                try:
-                    started_dt = datetime.fromisoformat(parts[1][:19])
-                    uptime_seconds = int((datetime.now() - started_dt).total_seconds())
-                except Exception:
-                    pass
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().split(" ", 1)
+                proxy_status = parts[0]
+                if len(parts) > 1:
+                    try:
+                        started_dt = datetime.fromisoformat(parts[1][:19])
+                        uptime_seconds = int((datetime.now() - started_dt).total_seconds())
+                    except Exception:
+                        pass
+        except FileNotFoundError:
+            proxy_status = "running"
         content = read_toml()
         users = get_users_from_toml(content)
         active = sum(1 for u in users.values() if not u['disabled'])
