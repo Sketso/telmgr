@@ -419,6 +419,11 @@ def admins_keyboard() -> InlineKeyboardMarkup:
         )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def owns_user(user_id: int, users: dict, name: str) -> bool:
+    if is_super_admin(user_id):
+        return True
+    return str(users.get(name, {}).get('admin_id')) == str(user_id)
+
 def format_users(users: dict, toml_users: dict) -> str:
     if not users:
         return "Юзеров нет"
@@ -542,6 +547,15 @@ async def delete_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
     client = get_client(message.from_user.id)
     try:
+        users = await client.get_users()
+        if name not in users:
+            await message.answer("❌ Юзер '" + name + "' не найден")
+            await state.clear()
+            return
+        if not owns_user(message.from_user.id, users, name):
+            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
+            await state.clear()
+            return
         await client.delete_user(name)
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
@@ -569,6 +583,10 @@ async def toggle_user_name(message: Message, state: FSMContext):
         users = await client.get_users()
         if name not in users:
             await message.answer("❌ Юзер '" + name + "' не найден")
+            await state.clear()
+            return
+        if not owns_user(message.from_user.id, users, name):
+            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
             await state.clear()
             return
         if users[name]['disabled']:
@@ -615,6 +633,15 @@ async def limit_user_days(message: Message, state: FSMContext):
     name = data['name']
     client = get_client(message.from_user.id)
     try:
+        users = await client.get_users()
+        if name not in users:
+            await message.answer("❌ Юзер '" + name + "' не найден")
+            await state.clear()
+            return
+        if not owns_user(message.from_user.id, users, name):
+            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
+            await state.clear()
+            return
         await client.set_limit(name, days)
         if days == 0:
             job_id = "disable_" + name
