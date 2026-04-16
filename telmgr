@@ -865,6 +865,15 @@ def cmd_server_remove(sid):
     save_servers(data)
     ok(f"Сервер '{name}' удалён")
 
+def cmd_server_rename(sid, new_name):
+    data = load_servers()
+    if sid not in data.get("servers", {}):
+        err(f"Сервер '{sid}' не найден. Список: telmgr server list")
+    old_name = data["servers"][sid].get("name", sid)
+    data["servers"][sid]["name"] = new_name
+    save_servers(data)
+    ok(f"Сервер переименован: '{old_name}' → '{new_name}'")
+
 def cmd_server_test(sid):
     import urllib.request, urllib.error
     data = load_servers()
@@ -1107,6 +1116,7 @@ def usage():
 
   telmgr server list                Список подключённых серверов
   telmgr server add <n> <url> <key> Добавить удалённый сервер
+  telmgr server rename <id> <name>  Переименовать сервер
   telmgr server remove <id>         Удалить сервер из реестра
   telmgr server test <id>           Проверить доступность сервера
 
@@ -1214,6 +1224,9 @@ def main():
         elif cmd == "remove":
             if len(args) < 3: err("Укажи ID сервера")
             cmd_server_remove(args[2])
+        elif cmd == "rename":
+            if len(args) < 4: err("Укажи: server rename <id> <новое_имя>")
+            cmd_server_rename(args[2], args[3])
         elif cmd == "test":
             if len(args) < 3: err("Укажи ID сервера")
             cmd_server_test(args[2])
