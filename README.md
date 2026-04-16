@@ -97,6 +97,7 @@ telmgr bot setup   # выбрать slave → получить API ключ и �
 ```bash
 telmgr server add "Название" http://<IP>:<PORT> <API_KEY>
 telmgr server list
+telmgr server rename <id> "Новое имя"
 telmgr server test <id>
 telmgr server remove <id>
 ```
