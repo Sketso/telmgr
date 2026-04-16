@@ -26,8 +26,11 @@ TELEMT_DIR = os.environ.get("TELEMT_DIR", os.path.join(os.path.expanduser("~"), 
 TOML_PATH = os.path.join(TELEMT_DIR, "telemt.toml")
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
+SERVERS_PATH = os.path.join(TELEMT_DIR, ".telmgr-servers.json")
 PUBLIC_HOST = os.environ.get("TELEMT_HOST")
 PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
+API_PORT = int(os.environ.get("TELMGR_API_PORT", "8765"))
+API_KEY = os.environ.get("TELMGR_API_KEY", "")
 
 # === Цвета ===
 RED = "\033[31m"
@@ -549,11 +552,32 @@ def cmd_update():
     else:
         info("bot.py не найден — пропускаем")
 
+    api_result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=telmgr-api", "--format", "{{.Names}}"],
+        capture_output=True, text=True
+    )
+    if "telmgr-api" in api_result.stdout:
+        info("Перезапускаем telmgr-api...")
+        subprocess.run(["docker", "compose", "restart", "telmgr-api"], cwd=TELEMT_DIR, check=False)
+        ok("telmgr-api перезапущен")
+
 def cmd_bot_setup():
     import urllib.request
 
     if os.geteuid() != 0:
         err("Запусти от root")
+
+    sys.stdout.write("Режим: [M]aster (новый бот) или [s]lave (подключить к существующему)? [M/s]: ")
+    sys.stdout.flush()
+    mode = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip().lower()
+    if mode == 's':
+        _cmd_bot_setup_slave()
+    else:
+        _cmd_bot_setup_master()
+
+
+def _cmd_bot_setup_master():
+    import urllib.request
 
     result = subprocess.run(
         ["docker", "ps", "-a", "--filter", "name=telmgr-bot", "--format", "{{.Names}}"],
@@ -567,6 +591,10 @@ def cmd_bot_setup():
         if ans.lower() != 'y':
             info("Отменено")
             return
+
+    sys.stdout.write("Название этого сервера [Local]: ")
+    sys.stdout.flush()
+    server_name = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip() or "Local"
 
     sys.stdout.write("Введи BOT_TOKEN от @BotFather: ")
     sys.stdout.flush()
@@ -648,9 +676,95 @@ def cmd_bot_setup():
             json.dump(admins, f, indent=2)
         ok(".telmgr-admins.json создан")
 
+    # Создаём/обновляем реестр серверов с именем этого сервера
+    servers_data = load_servers()
+    servers_data["servers"]["local"]["name"] = server_name
+    save_servers(servers_data)
+    ok(f".telmgr-servers.json создан (этот сервер: '{server_name}')")
+
     info("Запускаем telmgr-bot...")
     subprocess.run(["docker", "compose", "up", "-d", "telmgr-bot"], cwd=TELEMT_DIR, check=True)
     ok("Бот установлен и запущен!")
+
+
+def _cmd_bot_setup_slave():
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=telmgr-api", "--format", "{{.Names}}"],
+        capture_output=True, text=True
+    )
+    if "telmgr-api" in result.stdout:
+        warn("API сервер уже установлен (контейнер telmgr-api существует)")
+        sys.stdout.write("Переустановить? [y/N]: ")
+        sys.stdout.flush()
+        ans = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
+        if ans.lower() != 'y':
+            info("Отменено")
+            return
+
+    api_key = subprocess.check_output(["openssl", "rand", "-hex", "16"]).decode().strip()
+
+    sys.stdout.write(f"Порт API сервера [{API_PORT}]: ")
+    sys.stdout.flush()
+    port_input = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
+    api_port = int(port_input) if port_input.isdigit() else API_PORT
+
+    env_path = os.path.join(TELEMT_DIR, ".env")
+    with open(env_path, "r") as f:
+        env_lines = f.read().splitlines()
+    env_lines = [l for l in env_lines if not l.startswith("TELMGR_API_PORT=") and not l.startswith("TELMGR_API_KEY=")]
+    env_lines += [f"TELMGR_API_PORT={api_port}", f"TELMGR_API_KEY={api_key}"]
+    with open(env_path, "w") as f:
+        f.write("\n".join(env_lines) + "\n")
+    ok(".env обновлён")
+
+    compose_path = os.path.join(TELEMT_DIR, "docker-compose.yml")
+    with open(compose_path, "r") as f:
+        compose_content = f.read()
+    if "telmgr-api" not in compose_content:
+        api_service = (
+            "\n"
+            "  telmgr-api:\n"
+            "    image: python:3.11-slim\n"
+            "    container_name: telmgr-api\n"
+            "    restart: unless-stopped\n"
+            "    working_dir: /app\n"
+            "    volumes:\n"
+            "      - ./.env:/app/.env:ro\n"
+            "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
+            "      - ./telemt.toml:/app/data/telemt.toml\n"
+            "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
+            "    environment:\n"
+            "      - TELEMT_DIR=/app/data\n"
+            "    env_file:\n"
+            "      - .env\n"
+            f"    ports:\n"
+            f"      - \"{api_port}:{api_port}/tcp\"\n"
+            "    command: >\n"
+            '      sh -c "pip install python-dotenv --quiet &&\n'
+            '             python3 /usr/local/bin/telmgr.py serve"\n'
+            "    logging:\n"
+            "      driver: json-file\n"
+            "      options:\n"
+            '        max-size: "10m"\n'
+            '        max-file: "3"\n'
+        )
+        with open(compose_path, "a") as f:
+            f.write(api_service)
+        ok("docker-compose.yml обновлён")
+
+    info("Запускаем telmgr-api...")
+    subprocess.run(["docker", "compose", "up", "-d", "telmgr-api"], cwd=TELEMT_DIR, check=True)
+    ok("API сервер запущен!")
+
+    server_ip = PUBLIC_HOST or "<IP_ЭТОГО_СЕРВЕРА>"
+    print(f"\n{BOLD}=== Slave сервер готов! ==={RESET}")
+    print(f"API порт:  {CYAN}{api_port}{RESET}")
+    print(f"API ключ:  {CYAN}{api_key}{RESET}")
+    print()
+    print("На Master сервере выполни:")
+    print(f"  {BOLD}telmgr server add \"Название\" http://{server_ip}:{api_port} {api_key}{RESET}")
+    print()
+    warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
 
 def cmd_backup():
     import tarfile
@@ -691,6 +805,285 @@ def cmd_restore(backup_file):
     ok("Файлы восстановлены")
     info(f"Перезапусти контейнеры: docker compose -f {TELEMT_DIR}/docker-compose.yml restart")
 
+# === Реестр серверов ===
+def load_servers():
+    if not Path(SERVERS_PATH).exists():
+        return {"servers": {"local": {
+            "name": "Local",
+            "url": "local",
+            "api_key": None,
+            "host": PUBLIC_HOST or "",
+            "port": PUBLIC_PORT
+        }}}
+    with open(SERVERS_PATH) as f:
+        return json.load(f)
+
+def save_servers(data):
+    with open(SERVERS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+def cmd_server_list():
+    data = load_servers()
+    servers = data.get("servers", {})
+    print(f"\n{BOLD}{'ID':<10} {'Название':<20} {'URL':<35} {'Хост':<25} {'Порт'}{RESET}")
+    print("─" * 95)
+    for sid, s in servers.items():
+        url = s.get("url", "")
+        display_url = "(local)" if url == "local" else url
+        print(f"{sid:<10} {s.get('name',''):<20} {display_url:<35} {s.get('host',''):<25} {s.get('port','')}")
+    print()
+
+def cmd_server_add(name, url, api_key):
+    import urllib.request, urllib.error
+    if not url.startswith("http://") and not url.startswith("https://"):
+        err("URL должен начинаться с http:// или https://")
+    data = load_servers()
+    req = urllib.request.Request(url.rstrip("/") + "/status")
+    req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status_data = json.loads(resp.read())
+        host = status_data.get("host", "")
+        port = str(status_data.get("port", ""))
+        ok(f"Сервер доступен: {host}:{port}")
+    except Exception as e:
+        warn(f"Не удалось подключиться: {e}")
+        host, port = "", ""
+    sid = subprocess.check_output(["openssl", "rand", "-hex", "4"]).decode().strip()
+    data["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "host": host, "port": port}
+    save_servers(data)
+    ok(f"Сервер '{name}' добавлен (ID: {sid})")
+
+def cmd_server_remove(sid):
+    if sid == "local":
+        err("Нельзя удалить локальный сервер")
+    data = load_servers()
+    if sid not in data.get("servers", {}):
+        err(f"Сервер '{sid}' не найден")
+    name = data["servers"][sid].get("name", sid)
+    del data["servers"][sid]
+    save_servers(data)
+    ok(f"Сервер '{name}' удалён")
+
+def cmd_server_test(sid):
+    import urllib.request, urllib.error
+    data = load_servers()
+    if sid not in data.get("servers", {}):
+        err(f"Сервер '{sid}' не найден")
+    s = data["servers"][sid]
+    if s.get("url") == "local":
+        ok("Локальный сервер — всегда доступен")
+        return
+    req = urllib.request.Request(s["url"].rstrip("/") + "/status")
+    req.add_header("Authorization", f"Bearer {s['api_key']}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status_data = json.loads(resp.read())
+        ok(f"Доступен. Статус прокси: {status_data.get('proxy_status','?')}, юзеров: {status_data.get('users_active','?')} active")
+    except Exception as e:
+        err(f"Недоступен: {e}")
+
+
+# === HTTP API сервер (slave mode) ===
+class TelmgrAPIHandler:
+    def __init__(self):
+        pass
+
+import http.server, socketserver, io, contextlib
+
+class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def _check_auth(self):
+        auth = self.headers.get("Authorization", "")
+        if not API_KEY or auth != f"Bearer {API_KEY}":
+            self._send_json({"error": "Unauthorized"}, 401)
+            return False
+        return True
+
+    def _send_json(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length)) if length else {}
+
+    def _call_cmd(self, fn, *args):
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                fn(*args)
+            return buf.getvalue(), None
+        except SystemExit as e:
+            return buf.getvalue(), str(e)
+        except Exception as e:
+            return "", str(e)
+
+    def _parse_path(self):
+        path = self.path.split("?")[0].rstrip("/")
+        parts = [p for p in path.split("/") if p]
+        return parts
+
+    def do_GET(self):
+        if not self._check_auth():
+            return
+        parts = self._parse_path()
+        if parts == ["status"]:
+            self._handle_status()
+        elif parts == ["users"]:
+            self._handle_get_users()
+        elif len(parts) == 3 and parts[0] == "users" and parts[2] == "link":
+            self._handle_get_link(parts[1])
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def do_POST(self):
+        if not self._check_auth():
+            return
+        parts = self._parse_path()
+        if parts == ["users"]:
+            self._handle_add_user()
+        elif len(parts) == 3 and parts[0] == "users" and parts[2] == "enable":
+            _, e = self._call_cmd(cmd_enable, parts[1])
+            self._send_json({"error": e} if e else {"ok": True})
+        elif len(parts) == 3 and parts[0] == "users" and parts[2] == "disable":
+            _, e = self._call_cmd(cmd_disable, parts[1])
+            self._send_json({"error": e} if e else {"ok": True})
+        elif len(parts) == 3 and parts[0] == "users" and parts[2] == "limit":
+            body = self._read_body()
+            _, e = self._call_cmd(cmd_limit, parts[1], body.get("days", 0))
+            self._send_json({"error": e} if e else {"ok": True})
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def do_DELETE(self):
+        if not self._check_auth():
+            return
+        parts = self._parse_path()
+        if len(parts) == 2 and parts[0] == "users":
+            _, e = self._call_cmd(cmd_delete, parts[1])
+            self._send_json({"error": e} if e else {"ok": True})
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def _handle_status(self):
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
+            capture_output=True, text=True
+        )
+        proxy_status = "unknown"
+        uptime_seconds = 0
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(" ", 1)
+            proxy_status = parts[0]
+            if len(parts) > 1:
+                try:
+                    started_dt = datetime.fromisoformat(parts[1][:19])
+                    uptime_seconds = int((datetime.now() - started_dt).total_seconds())
+                except Exception:
+                    pass
+        content = read_toml()
+        users = get_users_from_toml(content)
+        active = sum(1 for u in users.values() if not u['disabled'])
+        disabled = sum(1 for u in users.values() if u['disabled'])
+        self._send_json({
+            "proxy_status": proxy_status,
+            "uptime_seconds": uptime_seconds,
+            "host": PUBLIC_HOST or "",
+            "port": PUBLIC_PORT,
+            "users_active": active,
+            "users_disabled": disabled
+        })
+
+    def _handle_get_users(self):
+        content = read_toml()
+        toml_users = get_users_from_toml(content)
+        meta = load_meta()
+        result = {}
+        for name, tdata in toml_users.items():
+            m = meta.get(name, {})
+            result[name] = {
+                "secret": tdata["secret"],
+                "disabled": tdata["disabled"],
+                "created": m.get("created"),
+                "expires": m.get("expires"),
+                "admin_id": m.get("admin_id"),
+                "admin_name": m.get("admin_name"),
+                "admin_username": m.get("admin_username"),
+            }
+        self._send_json(result)
+
+    def _handle_add_user(self):
+        body = self._read_body()
+        name = body.get("name", "")
+        days = body.get("days", 0)
+        admin_id = body.get("admin_id")
+        admin_name = body.get("admin_name")
+        admin_username = body.get("admin_username")
+        if not re.match(r'^[a-zA-Z0-9_]+$', name):
+            self._send_json({"error": "Недопустимое имя пользователя"}, 400)
+            return
+        content = read_toml()
+        users = get_users_from_toml(content)
+        if name in users:
+            self._send_json({"error": f"Пользователь '{name}' уже существует"}, 409)
+            return
+        secret = generate_secret()
+        lines = content.splitlines()
+        result_lines = []
+        inserted = False
+        for line in lines:
+            result_lines.append(line)
+            if line.strip() == "[access.users]" and not inserted:
+                result_lines.append(f'{name} = "{secret}"')
+                inserted = True
+        if not inserted:
+            self._send_json({"error": "Секция [access.users] не найдена"}, 500)
+            return
+        write_toml("\n".join(result_lines))
+        meta = load_meta()
+        expires = None
+        if days and int(days) > 0:
+            expires = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
+        meta[name] = {
+            "secret": secret,
+            "created": datetime.now().strftime("%Y-%m-%d"),
+            "expires": expires,
+            "disabled": False,
+            "admin_id": admin_id,
+            "admin_name": admin_name,
+            "admin_username": admin_username,
+        }
+        save_meta(meta)
+        if expires:
+            add_cron(name, expires)
+        self._send_json({"link": build_link(secret), "expires": expires})
+
+    def _handle_get_link(self, name):
+        content = read_toml()
+        users = get_users_from_toml(content)
+        if name not in users:
+            self._send_json({"error": f"Пользователь '{name}' не найден"}, 404)
+            return
+        self._send_json({"link": build_link(users[name]["secret"])})
+
+
+def cmd_serve():
+    if not API_KEY:
+        err("TELMGR_API_KEY не установлен в .env")
+    class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        allow_reuse_address = True
+    with ThreadedTCPServer(("0.0.0.0", API_PORT), _TelmgrAPIHandler) as server:
+        info(f"telmgr API сервер запущен на порту {API_PORT}")
+        server.serve_forever()
+
+
 def usage():
     print(f"""
 {BOLD}telmgr — менеджер пользователей Telemt MTProxy{RESET}
@@ -710,7 +1103,14 @@ def usage():
   telmgr admin add <telegram_id>    Добавить админа
   telmgr admin delete <telegram_id> Удалить админа
 
-  telmgr bot setup                  Подключить Telegram бота к существующей установке
+  telmgr bot setup                  Подключить Telegram бота (master) или API сервер (slave)
+
+  telmgr server list                Список подключённых серверов
+  telmgr server add <n> <url> <key> Добавить удалённый сервер
+  telmgr server remove <id>         Удалить сервер из реестра
+  telmgr server test <id>           Проверить доступность сервера
+
+  telmgr serve                      Запустить HTTP API сервер (slave mode)
 
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера (default: 50)
@@ -748,6 +1148,9 @@ def main():
     elif section == "restore":
         if len(args) < 2: err("Укажи путь к файлу бэкапа")
         cmd_restore(args[1])
+        return
+    elif section == "serve":
+        cmd_serve()
         return
 
     if len(args) < 2:
@@ -800,6 +1203,20 @@ def main():
     elif section == "bot":
         if cmd == "setup":
             cmd_bot_setup()
+        else:
+            err(f"Неизвестная команда: {cmd}")
+    elif section == "server":
+        if cmd == "list":
+            cmd_server_list()
+        elif cmd == "add":
+            if len(args) < 5: err("Укажи: server add <name> <url> <api_key>")
+            cmd_server_add(args[2], args[3], args[4])
+        elif cmd == "remove":
+            if len(args) < 3: err("Укажи ID сервера")
+            cmd_server_remove(args[2])
+        elif cmd == "test":
+            if len(args) < 3: err("Укажи ID сервера")
+            cmd_server_test(args[2])
         else:
             err(f"Неизвестная команда: {cmd}")
     else:

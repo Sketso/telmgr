@@ -66,16 +66,29 @@ FIRST_USER=${FIRST_USER:-myproxy}
 echo ""
 read -p "Установить Telegram бота для управления? [y/N]: " INSTALL_BOT
 INSTALL_BOT_ENABLED=false
+BOT_SLAVE=false
 if [[ "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
     INSTALL_BOT_ENABLED=true
     echo ""
-    info "Для создания бота напиши @BotFather в Telegram -> /newbot"
-    info "Для получения своего Telegram ID напиши @userinfobot"
-    echo ""
-    read -p "Введи BOT_TOKEN от @BotFather: " BOT_TOKEN
-    [[ -z "$BOT_TOKEN" ]] && err "BOT_TOKEN не может быть пустым"
-    read -p "Введи свой Telegram ID (суперадмин): " SUPER_ADMIN_ID
-    [[ -z "$SUPER_ADMIN_ID" ]] && err "SUPER_ADMIN_ID не может быть пустым"
+    read -p "Режим: [M]aster (новый бот) или [s]lave (подключить к существующему)? [M/s]: " BOT_MODE
+    BOT_MODE=${BOT_MODE:-M}
+    if [[ "$BOT_MODE" =~ ^[Ss]$ ]]; then
+        BOT_SLAVE=true
+        TELMGR_API_KEY=$(openssl rand -hex 16)
+        read -p "Порт API сервера [8765]: " TELMGR_API_PORT
+        TELMGR_API_PORT=${TELMGR_API_PORT:-8765}
+    else
+        echo ""
+        info "Для создания бота напиши @BotFather в Telegram -> /newbot"
+        info "Для получения своего Telegram ID напиши @userinfobot"
+        echo ""
+        read -p "Название этого сервера [Local]: " SERVER_NAME
+        SERVER_NAME=${SERVER_NAME:-Local}
+        read -p "Введи BOT_TOKEN от @BotFather: " BOT_TOKEN
+        [[ -z "$BOT_TOKEN" ]] && err "BOT_TOKEN не может быть пустым"
+        read -p "Введи свой Telegram ID (суперадмин): " SUPER_ADMIN_ID
+        [[ -z "$SUPER_ADMIN_ID" ]] && err "SUPER_ADMIN_ID не может быть пустым"
+    fi
 fi
 
 # === Директория ===
@@ -92,10 +105,16 @@ TELEMT_HOST=$TELEMT_HOST
 TELEMT_PORT=$TELEMT_PORT
 TELEMT_DIR=$TELEMT_DIR
 EOF
-if $INSTALL_BOT_ENABLED; then
+if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     cat >> "$TELEMT_DIR/.env" << EOF
 BOT_TOKEN=$BOT_TOKEN
 SUPER_ADMIN_ID=$SUPER_ADMIN_ID
+EOF
+fi
+if $BOT_SLAVE; then
+    cat >> "$TELEMT_DIR/.env" << EOF
+TELMGR_API_PORT=$TELMGR_API_PORT
+TELMGR_API_KEY=$TELMGR_API_KEY
 EOF
 fi
 ok ".env создан"
@@ -140,12 +159,7 @@ EOF
 ok "telemt.toml создан"
 
 # === docker-compose.yml ===
-if $INSTALL_BOT_ENABLED; then
-    # Копируем бота
-    curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$TELEMT_DIR/bot.py"
-    ok "bot.py скопирован в $TELEMT_DIR"
-
-    cat > "$TELEMT_DIR/docker-compose.yml" << EOF
+TELEMT_SERVICE=$(cat << EOF
 services:
   telemt:
     image: whn0thacked/telemt-docker:latest
@@ -171,6 +185,16 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+EOF
+)
+
+if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
+    # Master: telemt + telmgr-bot
+    curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$TELEMT_DIR/bot.py"
+    ok "bot.py скопирован в $TELEMT_DIR"
+
+    cat > "$TELEMT_DIR/docker-compose.yml" << EOF
+$TELEMT_SERVICE
 
   telmgr-bot:
     image: python:3.11-slim
@@ -197,34 +221,39 @@ services:
         max-size: "10m"
         max-file: "3"
 EOF
-else
+elif $BOT_SLAVE; then
+    # Slave: telemt + telmgr-api
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
-services:
-  telemt:
-    image: whn0thacked/telemt-docker:latest
-    container_name: telemt
+$TELEMT_SERVICE
+
+  telmgr-api:
+    image: python:3.11-slim
+    container_name: telmgr-api
     restart: unless-stopped
-    environment:
-      RUST_LOG: "info"
+    working_dir: /app
     volumes:
-      - ./telemt.toml:/etc/telemt.toml:ro
+      - ./.env:/app/.env:ro
+      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
+      - ./telemt.toml:/app/data/telemt.toml
+      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
+    environment:
+      - TELEMT_DIR=/app/data
+    env_file:
+      - .env
     ports:
-      - "$TELEMT_PORT:$TELEMT_PORT/tcp"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    read_only: true
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=16m
+      - "$TELMGR_API_PORT:$TELMGR_API_PORT/tcp"
+    command: >
+      sh -c "pip install python-dotenv --quiet &&
+             python3 /usr/local/bin/telmgr.py serve"
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 EOF
+else
+    # No bot
+    echo "$TELEMT_SERVICE" > "$TELEMT_DIR/docker-compose.yml"
 fi
 ok "docker-compose.yml создан"
 
@@ -249,7 +278,7 @@ EOF
 ok "Метаданные созданы"
 
 # === admins.json ===
-if $INSTALL_BOT_ENABLED; then
+if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     cat > "$TELEMT_DIR/.telmgr-admins.json" << EOF
 {
   "admins": {
@@ -263,12 +292,32 @@ if $INSTALL_BOT_ENABLED; then
 }
 EOF
     ok ".telmgr-admins.json создан"
+
+    # Реестр серверов для master
+    cat > "$TELEMT_DIR/.telmgr-servers.json" << EOF
+{
+  "servers": {
+    "local": {
+      "name": "$SERVER_NAME",
+      "url": "local",
+      "api_key": null,
+      "host": "$TELEMT_HOST",
+      "port": "$TELEMT_PORT"
+    }
+  }
+}
+EOF
+    ok ".telmgr-servers.json создан"
 fi
 
 # === UFW ===
 if command -v ufw &>/dev/null; then
     ufw allow "$TELEMT_PORT/tcp" comment "Telemt MTProxy"
     ok "Порт $TELEMT_PORT открыт в UFW"
+    if $BOT_SLAVE; then
+        ufw allow "$TELMGR_API_PORT/tcp" comment "telmgr API"
+        ok "Порт $TELMGR_API_PORT открыт в UFW"
+    fi
 fi
 
 # === Запускаем Docker ===
@@ -276,7 +325,7 @@ cd "$TELEMT_DIR"
 docker compose up -d
 ok "Telemt запущен"
 
-if $INSTALL_BOT_ENABLED; then
+if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     info "Ожидаем запуска бота..."
     sleep 15
     BOT_STATUS=$(docker inspect --format='{{.State.Status}}' telmgr-bot 2>/dev/null)
@@ -302,5 +351,14 @@ echo -e "${BOLD}=== Готово! ===${RESET}"
 echo -e "Пользователь: ${CYAN}$FIRST_USER${RESET}"
 echo -e "Ссылка:       ${CYAN}$LINK${RESET}"
 echo ""
+if $BOT_SLAVE; then
+    echo -e "${BOLD}=== Slave сервер: регистрация ===${RESET}"
+    echo -e "API порт:  ${CYAN}$TELMGR_API_PORT${RESET}"
+    echo -e "API ключ:  ${CYAN}$TELMGR_API_KEY${RESET}"
+    echo ""
+    echo -e "На Master сервере выполни:"
+    echo -e "  ${BOLD}telmgr server add \"Название\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
+    echo ""
+fi
 echo -e "Управление: ${BOLD}telmgr --help${RESET}"
 echo ""

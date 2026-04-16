@@ -22,7 +22,9 @@ load_dotenv(os.path.join(os.path.expanduser('~'), 'telemt', '.env'))
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 SUPER_ADMIN_ID = int(os.getenv('SUPER_ADMIN_ID'))
-ADMINS_PATH = os.path.join(os.getenv('TELEMT_DIR', os.path.join(os.path.expanduser('~'), 'telemt')), '.telmgr-admins.json')
+TELEMT_DIR = os.getenv('TELEMT_DIR', os.path.join(os.path.expanduser('~'), 'telemt'))
+ADMINS_PATH = os.path.join(TELEMT_DIR, '.telmgr-admins.json')
+SERVERS_PATH = os.path.join(TELEMT_DIR, '.telmgr-servers.json')
 
 # Импортируем функции из telmgr
 import importlib.util
@@ -31,6 +33,206 @@ assert spec is not None, "telmgr не найден в /usr/local/bin/telmgr.py"
 telmgr = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(telmgr)
+
+import urllib.request, urllib.error
+
+# === Server clients ===
+
+class LocalServerClient:
+    def __init__(self, info: dict):
+        self.name = info.get("name", "Local")
+        self.host = info.get("host", "")
+        self.port = info.get("port", "")
+
+    def _wrap(self, fn, *args):
+        import io, contextlib
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                fn(*args)
+            return None
+        except SystemExit as e:
+            raise ValueError(buf.getvalue().strip() or str(e))
+        except Exception as e:
+            raise ValueError(str(e))
+
+    async def get_users(self) -> dict:
+        loop = asyncio.get_event_loop()
+        def _sync():
+            content = telmgr.read_toml()
+            toml_users = telmgr.get_users_from_toml(content)
+            meta = telmgr.load_meta()
+            result = {}
+            for name, tdata in toml_users.items():
+                m = meta.get(name, {})
+                result[name] = {**m, "disabled": tdata["disabled"], "secret": tdata["secret"]}
+            return result
+        return await loop.run_in_executor(None, _sync)
+
+    async def add_user(self, name: str, days: int, admin_id: int, admin_name: str, admin_username: str) -> dict:
+        loop = asyncio.get_event_loop()
+        def _sync():
+            content = telmgr.read_toml()
+            users = telmgr.get_users_from_toml(content)
+            if name in users:
+                raise ValueError(f"Юзер '{name}' уже существует")
+            secret = telmgr.generate_secret()
+            lines = content.splitlines()
+            result_lines, inserted = [], False
+            for line in lines:
+                result_lines.append(line)
+                if line.strip() == "[access.users]" and not inserted:
+                    result_lines.append(f'{name} = "{secret}"')
+                    inserted = True
+            if not inserted:
+                raise ValueError("Секция [access.users] не найдена")
+            telmgr.write_toml("\n".join(result_lines))
+            expires = None
+            if days > 0:
+                from datetime import datetime, timedelta
+                expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+            meta = telmgr.load_meta()
+            meta[name] = {
+                "secret": secret,
+                "created": datetime.now().strftime("%Y-%m-%d"),
+                "expires": expires,
+                "disabled": False,
+                "admin_id": admin_id,
+                "admin_name": admin_name,
+                "admin_username": admin_username,
+            }
+            telmgr.save_meta(meta)
+            if expires:
+                telmgr.add_cron(name, expires)
+            return {"link": telmgr.build_link(secret), "expires": expires}
+        return await loop.run_in_executor(None, _sync)
+
+    async def delete_user(self, name: str):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._wrap(telmgr.cmd_delete, name))
+
+    async def enable_user(self, name: str):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._wrap(telmgr.cmd_enable, name))
+
+    async def disable_user(self, name: str):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._wrap(telmgr.cmd_disable, name))
+
+    async def set_limit(self, name: str, days: int):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: self._wrap(telmgr.cmd_limit, name, days))
+
+    async def get_link(self, name: str) -> str:
+        loop = asyncio.get_event_loop()
+        def _sync():
+            content = telmgr.read_toml()
+            users = telmgr.get_users_from_toml(content)
+            if name not in users:
+                raise ValueError(f"Юзер '{name}' не найден")
+            return telmgr.build_link(users[name]["secret"])
+        return await loop.run_in_executor(None, _sync)
+
+
+class RemoteServerClient:
+    def __init__(self, info: dict):
+        self.name = info.get("name", "Remote")
+        self.host = info.get("host", "")
+        self.port = info.get("port", "")
+        self._base = info["url"].rstrip("/")
+        self._key = info["api_key"]
+
+    def _request(self, method: str, path: str, body: dict = None) -> dict:
+        url = f"{self._base}{path}"
+        data = json.dumps(body).encode() if body else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"Bearer {self._key}")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+                if "error" in result:
+                    raise ValueError(result["error"])
+                return result
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = json.loads(e.read())
+                raise ValueError(err_body.get("error", str(e)))
+            except (json.JSONDecodeError, AttributeError):
+                raise ValueError(str(e))
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Сервер недоступен: {e}")
+
+    async def _req(self, method, path, body=None):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._request, method, path, body)
+
+    async def get_users(self) -> dict:
+        return await self._req("GET", "/users")
+
+    async def add_user(self, name: str, days: int, admin_id: int, admin_name: str, admin_username: str) -> dict:
+        return await self._req("POST", "/users", {
+            "name": name, "days": days,
+            "admin_id": admin_id, "admin_name": admin_name, "admin_username": admin_username
+        })
+
+    async def delete_user(self, name: str):
+        await self._req("DELETE", f"/users/{name}")
+
+    async def enable_user(self, name: str):
+        await self._req("POST", f"/users/{name}/enable")
+
+    async def disable_user(self, name: str):
+        await self._req("POST", f"/users/{name}/disable")
+
+    async def set_limit(self, name: str, days: int):
+        await self._req("POST", f"/users/{name}/limit", {"days": days})
+
+    async def get_link(self, name: str) -> str:
+        data = await self._req("GET", f"/users/{name}/link")
+        return data["link"]
+
+
+# === Server context ===
+
+def load_servers_config() -> dict:
+    if not Path(SERVERS_PATH).exists():
+        return {"servers": {"local": {
+            "name": "Local", "url": "local", "api_key": None,
+            "host": telmgr.PUBLIC_HOST or "", "port": telmgr.PUBLIC_PORT
+        }}}
+    with open(SERVERS_PATH) as f:
+        return json.load(f)
+
+def save_servers_config(data: dict):
+    with open(SERVERS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+def has_multiple_servers() -> bool:
+    cfg = load_servers_config()
+    return len(cfg.get("servers", {})) > 1
+
+_user_server_ctx: dict = {}
+
+def get_user_server_id(user_id: int) -> str:
+    if user_id in _user_server_ctx:
+        return _user_server_ctx[user_id]
+    cfg = load_servers_config()
+    servers = cfg.get("servers", {})
+    return "local" if "local" in servers else next(iter(servers), "local")
+
+def set_user_server(user_id: int, server_id: str):
+    _user_server_ctx[user_id] = server_id
+
+def get_client(user_id: int):
+    sid = get_user_server_id(user_id)
+    cfg = load_servers_config()
+    info_data = cfg["servers"].get(sid, cfg["servers"].get("local", {}))
+    if info_data.get("url") == "local":
+        return LocalServerClient(info_data)
+    return RemoteServerClient(info_data)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -136,11 +338,22 @@ class ToggleUser(StatesGroup):
 class LinkUser(StatesGroup):
     waiting_name = State()
 
+class AddServer(StatesGroup):
+    waiting_name = State()
+    waiting_url  = State()
+    waiting_key  = State()
+
 
 # === Keyboards ===
 
 def main_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    buttons = [
+    buttons = []
+    if has_multiple_servers():
+        sid = get_user_server_id(user_id)
+        cfg = load_servers_config()
+        server_name = cfg["servers"].get(sid, {}).get("name", "?")
+        buttons.append([InlineKeyboardButton(text=f"🖥 {server_name} ▼", callback_data="select_server")])
+    buttons += [
         [InlineKeyboardButton(text="➕ Добавить юзера", callback_data="add_user")],
         [InlineKeyboardButton(text="🗑 Удалить юзера", callback_data="delete_user")],
         [InlineKeyboardButton(text="⏸ Откл/Вкл юзера", callback_data="toggle_user")],
@@ -289,53 +502,25 @@ async def add_user_days(message: Message, state: FSMContext):
 
     data = await state.get_data()
     name = data['name']
+    client = get_client(message.from_user.id)
 
     try:
-        content = telmgr.read_toml()
-        users = telmgr.get_users_from_toml(content)
-        if name in users:
-            await message.answer("❌ Юзер '" + name + "' уже существует")
-            await state.clear()
-            return
-
-        secret = telmgr.generate_secret()
-        lines = content.splitlines()
-        result = []
-        inserted = False
-        for line in lines:
-            result.append(line)
-            if line.strip() == "[access.users]" and not inserted:
-                result.append(name + ' = "' + secret + '"')
-                inserted = True
-        telmgr.write_toml("\n".join(result))
-
-        expires = None
-        if days > 0:
-            expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-
-        meta = telmgr.load_meta()
-        meta[name] = {
-            "secret": secret,
-            "created": datetime.now().strftime("%Y-%m-%d"),
-            "expires": expires,
-            "disabled": False,
-            "admin_id": message.from_user.id,
-            "admin_name": message.from_user.full_name,
-            "admin_username": message.from_user.username
-        }
-        telmgr.save_meta(meta)
-
+        result = await client.add_user(
+            name, days,
+            message.from_user.id,
+            message.from_user.full_name,
+            message.from_user.username
+        )
+        link = result["link"]
+        expires = result.get("expires")
         if expires:
-            telmgr.add_cron(name, expires)
-
-        link = telmgr.build_link(secret)
+            schedule_user_disable(name, expires, message.from_user.id)
         text = "✅ Юзер <b>" + name + "</b> добавлен\n"
         if expires:
             text += "📅 Истекает: " + expires + "\n"
         text += "🔗 <code>" + link + "</code>"
         await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-
-    except Exception as e:
+    except (ValueError, Exception) as e:
         await message.answer("❌ Ошибка: " + str(e))
 
     await state.clear()
@@ -349,11 +534,12 @@ async def cb_delete_user(cb: CallbackQuery, state: FSMContext):
 @dp.message(DeleteUser.waiting_name)
 async def delete_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
+    client = get_client(message.from_user.id)
     try:
-        telmgr.cmd_delete(name)
+        await client.delete_user(name)
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
-    except (SystemExit, Exception) as e:
+    except (ValueError, Exception) as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -372,22 +558,22 @@ async def cb_toggle_user(cb: CallbackQuery, state: FSMContext):
 @dp.message(ToggleUser.waiting_name)
 async def toggle_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
+    client = get_client(message.from_user.id)
     try:
-        content = telmgr.read_toml()
-        users = telmgr.get_users_from_toml(content)
+        users = await client.get_users()
         if name not in users:
             await message.answer("❌ Юзер '" + name + "' не найден")
             await state.clear()
             return
         if users[name]['disabled']:
-            telmgr.cmd_enable(name)
+            await client.enable_user(name)
             await message.answer("✅ Юзер <b>" + name + "</b> включён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
         else:
-            telmgr.cmd_disable(name)
+            await client.disable_user(name)
             await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (SystemExit, Exception) as e:
+    except (ValueError, Exception) as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -421,8 +607,9 @@ async def limit_user_days(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     name = data['name']
+    client = get_client(message.from_user.id)
     try:
-        telmgr.cmd_limit(name, days)
+        await client.set_limit(name, days)
         if days == 0:
             job_id = "disable_" + name
             if scheduler.get_job(job_id):
@@ -434,7 +621,7 @@ async def limit_user_days(message: Message, state: FSMContext):
             schedule_user_disable(name, expires, message.from_user.id)
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (SystemExit, Exception) as e:
+    except (ValueError, Exception) as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -453,64 +640,63 @@ async def cb_link_user(cb: CallbackQuery, state: FSMContext):
 @dp.message(LinkUser.waiting_name)
 async def link_user_name(message: Message, state: FSMContext):
     name = message.text.strip()
+    client = get_client(message.from_user.id)
     try:
-        content = telmgr.read_toml()
-        users = telmgr.get_users_from_toml(content)
+        users = await client.get_users()
         if name not in users:
             await message.answer("❌ Юзер '" + name + "' не найден")
             await state.clear()
             return
-        link = telmgr.build_link(users[name]['secret'])
+        link = await client.get_link(name)
         if users[name]['disabled']:
             await message.answer("⚠️ Юзер <b>" + name + "</b> отключён, но ссылка:\n🔗 <code>" + link + "</code>",
                                  parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
         else:
             await message.answer("🔗 <code>" + link + "</code>",
                                  parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except Exception as e:
+    except (ValueError, Exception) as e:
         await message.answer("❌ Ошибка: " + str(e))
     await state.clear()
 
 @dp.callback_query(F.data == "my_users")
 async def cb_my_users(cb: CallbackQuery):
-    meta = telmgr.load_meta()
-    content = telmgr.read_toml()
-    toml_users = telmgr.get_users_from_toml(content)
-    my = {k: v for k, v in meta.items() if v.get('admin_id') == cb.from_user.id}
-    for name in my:
-        if name in toml_users:
-            my[name]['disabled'] = toml_users[name]['disabled']
-    text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my, toml_users)
-    await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    client = get_client(cb.from_user.id)
+    try:
+        all_users = await client.get_users()
+        my = {k: v for k, v in all_users.items() if v.get('admin_id') == cb.from_user.id}
+        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my, my)
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    except (ValueError, Exception) as e:
+        await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
 @dp.callback_query(F.data == "expiring_users")
 async def cb_expiring_users(cb: CallbackQuery):
-    meta = telmgr.load_meta()
-    content = telmgr.read_toml()
-    toml_users = telmgr.get_users_from_toml(content)
-    from datetime import datetime, timedelta, timedelta as _td
-    soon = []
-    for name, data in meta.items():
-        if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
-            continue
-        if data.get('expires'):
-            exp = datetime.strptime(data['expires'], "%Y-%m-%d")
-            diff = (exp - datetime.now()).days
-            if diff <= 5:
-                disabled = toml_users.get(name, {}).get('disabled', False)
-                soon.append((name, data['expires'], diff, disabled))
-    if not soon:
-        await cb.message.answer("✅ Нет юзеров с истекающим сроком в ближайшие 5 дней",
-                                reply_markup=main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    lines = ["⏰ <b>Истекают в ближайшие 5 дней:</b>\n"]
-    for name, expires, diff, disabled in sorted(soon, key=lambda x: x[2]):
-        status = "🔴" if disabled else "🟢"
-        emoji = "🔥" if diff <= 1 else "⚠️"
-        lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
-    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    client = get_client(cb.from_user.id)
+    try:
+        all_users = await client.get_users()
+        soon = []
+        for name, data in all_users.items():
+            if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
+                continue
+            if data.get('expires'):
+                exp = datetime.strptime(data['expires'], "%Y-%m-%d")
+                diff = (exp - datetime.now()).days
+                if diff <= 5:
+                    soon.append((name, data['expires'], diff, data.get('disabled', False)))
+        if not soon:
+            await cb.message.answer("✅ Нет юзеров с истекающим сроком в ближайшие 5 дней",
+                                    reply_markup=main_keyboard(cb.from_user.id))
+            await cb.answer()
+            return
+        lines = ["⏰ <b>Истекают в ближайшие 5 дней:</b>\n"]
+        for name, expires, diff, disabled in sorted(soon, key=lambda x: x[2]):
+            status = "🔴" if disabled else "🟢"
+            emoji = "🔥" if diff <= 1 else "⚠️"
+            lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    except (ValueError, Exception) as e:
+        await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
 @dp.callback_query(F.data == "all_users")
@@ -518,47 +704,36 @@ async def cb_all_users(cb: CallbackQuery):
     if not is_super_admin(cb.from_user.id):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
-    meta = telmgr.load_meta()
-    toml_content = telmgr.read_toml()
-    toml_users = telmgr.get_users_from_toml(toml_content)
-    admins_data = load_admins()
-    active_admin_ids = set(admins_data.get('admins', {}).keys())
-
-    for name in meta:
-        if name in toml_users:
-            meta[name]['disabled'] = toml_users[name]['disabled']
-
-    groups = {}
-    for name, data in meta.items():
-        admin_id = data.get('admin_id')
-        admin_username = data.get('admin_username')
-        admin_name = data.get('admin_name')
-        if admin_id is None:
-            key = ("👑 " + cb.from_user.full_name + " (суперадмин / CLI)", False)
-        elif str(admin_id) in active_admin_ids:
-            if admin_username:
-                key = ("👤 @" + admin_username, False)
+    client = get_client(cb.from_user.id)
+    try:
+        all_users = await client.get_users()
+        admins_data = load_admins()
+        active_admin_ids = set(admins_data.get('admins', {}).keys())
+        groups = {}
+        for name, data in all_users.items():
+            admin_id = data.get('admin_id')
+            admin_username = data.get('admin_username')
+            admin_name = data.get('admin_name')
+            if admin_id is None:
+                key = ("👑 " + cb.from_user.full_name + " (суперадмин / CLI)", False)
+            elif str(admin_id) in active_admin_ids:
+                key = ("👤 @" + admin_username, False) if admin_username else ("👤 " + str(admin_name or admin_id), False)
             else:
-                key = ("👤 " + str(admin_name or admin_id), False)
-        else:
-            if admin_username:
-                key = ("👤 @" + admin_username + " (Удалён)", True)
-            else:
-                key = ("👤 " + str(admin_name or admin_id) + " (Удалён)", True)
-        groups.setdefault(key, {})[name] = data
-
-    lines = ["👑 <b>Все юзеры:</b>\n"]
-    for (admin_label, is_deleted), users in groups.items():
-        if is_deleted and not users:
-            continue
-        lines.append("<b>" + admin_label + ":</b>")
-        for name, data in users.items():
-            status = "🔴" if data.get('disabled') else "🟢"
-            expires = data.get('expires') or "∞"
-            lines.append("  " + status + " <b>" + name + "</b> — до " + expires)
-        lines.append("")
-
-    await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+                key = ("👤 @" + admin_username + " (Удалён)", True) if admin_username else ("👤 " + str(admin_name or admin_id) + " (Удалён)", True)
+            groups.setdefault(key, {})[name] = data
+        lines = ["👑 <b>Все юзеры:</b>\n"]
+        for (admin_label, is_deleted), users in groups.items():
+            if is_deleted and not users:
+                continue
+            lines.append("<b>" + admin_label + ":</b>")
+            for name, data in users.items():
+                status = "🔴" if data.get('disabled') else "🟢"
+                expires = data.get('expires') or "∞"
+                lines.append("  " + status + " <b>" + name + "</b> — до " + expires)
+            lines.append("")
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
+    except (ValueError, Exception) as e:
+        await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
 # === Admin management ===
@@ -611,18 +786,6 @@ async def cb_remove_admin(cb: CallbackQuery):
         await cb.message.answer("Выбери кого удалить:", reply_markup=kb)
     await cb.answer()
 
-@dp.callback_query(F.data == "remove_admin")
-async def cb_remove_admin(cb: CallbackQuery):
-    if not is_super_admin(cb.from_user.id):
-        await cb.answer("⛔ Нет доступа", show_alert=True)
-        return
-    kb = admins_keyboard()
-    if kb is None:
-        await cb.message.answer("Нет админов для удаления")
-    else:
-        await cb.message.answer("Выбери кого удалить:", reply_markup=kb)
-    await cb.answer()
-
 @dp.callback_query(F.data.startswith("revoke_admin_"))
 async def cb_revoke_admin(cb: CallbackQuery):
     if not is_super_admin(cb.from_user.id):
@@ -656,11 +819,15 @@ async def cb_revoke_admin(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("revoke_with_users_"))
 async def cb_revoke_with_users(cb: CallbackQuery):
     uid = cb.data.replace("revoke_with_users_", "")
-    meta = telmgr.load_meta()
-    admin_users = [k for k, v in meta.items() if str(v.get('admin_id')) == uid]
+    client = get_client(cb.from_user.id)
+    try:
+        all_users = await client.get_users()
+        admin_users = [k for k, v in all_users.items() if str(v.get('admin_id')) == uid]
+    except Exception:
+        admin_users = []
     for name in admin_users:
         try:
-            telmgr.cmd_delete(name)
+            await client.delete_user(name)
         except Exception:
             pass
     remove_admin(int(uid))
@@ -692,6 +859,97 @@ async def cb_revoke_keep_users(cb: CallbackQuery):
         reply_markup=main_keyboard(cb.from_user.id)
     )
     await cb.answer()
+
+# === Server selector ===
+
+@dp.callback_query(F.data == "select_server")
+async def cb_select_server(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cfg = load_servers_config()
+    current_id = get_user_server_id(cb.from_user.id)
+    buttons = []
+    for sid, sinfo in cfg["servers"].items():
+        checkmark = "✅ " if sid == current_id else ""
+        buttons.append([InlineKeyboardButton(
+            text=checkmark + sinfo["name"],
+            callback_data="switch_server_" + sid
+        )])
+    if is_super_admin(cb.from_user.id):
+        buttons.append([InlineKeyboardButton(text="➕ Добавить сервер", callback_data="add_server")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await cb.message.answer("Выбери сервер:", reply_markup=kb)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("switch_server_"))
+async def cb_switch_server(cb: CallbackQuery):
+    sid = cb.data.replace("switch_server_", "")
+    cfg = load_servers_config()
+    if sid not in cfg["servers"]:
+        await cb.answer("❌ Сервер не найден", show_alert=True)
+        return
+    set_user_server(cb.from_user.id, sid)
+    name = cfg["servers"][sid]["name"]
+    await cb.message.answer(
+        "✅ Переключено на: <b>" + name + "</b>",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(cb.from_user.id)
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data == "add_server")
+async def cb_add_server(cb: CallbackQuery, state: FSMContext):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await cb.message.answer("Введи название нового сервера:")
+    await state.set_state(AddServer.waiting_name)
+    await cb.answer()
+
+@dp.message(AddServer.waiting_name)
+async def add_server_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await message.answer("Введи URL API сервера (например: http://1.2.3.4:8765):")
+    await state.set_state(AddServer.waiting_url)
+
+@dp.message(AddServer.waiting_url)
+async def add_server_url(message: Message, state: FSMContext):
+    url = message.text.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        await message.answer("❌ URL должен начинаться с http:// или https://")
+        return
+    await state.update_data(url=url)
+    await message.answer("Введи API ключ сервера:")
+    await state.set_state(AddServer.waiting_key)
+
+@dp.message(AddServer.waiting_key)
+async def add_server_key(message: Message, state: FSMContext):
+    import secrets as _secrets
+    data = await state.get_data()
+    name = data["name"]
+    url = data["url"]
+    api_key = message.text.strip()
+    test_client = RemoteServerClient({"name": name, "url": url, "api_key": api_key, "host": "", "port": ""})
+    try:
+        status = await test_client._req("GET", "/status")
+        host = status.get("host", "")
+        port = str(status.get("port", ""))
+    except ValueError as e:
+        await message.answer("❌ Не могу подключиться: " + str(e) + "\nПроверь URL и ключ.")
+        await state.clear()
+        return
+    cfg = load_servers_config()
+    sid = _secrets.token_hex(4)
+    cfg["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "host": host, "port": port}
+    save_servers_config(cfg)
+    await message.answer(
+        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port,
+        parse_mode="HTML",
+        reply_markup=main_keyboard(message.from_user.id)
+    )
+    await state.clear()
+
 
 async def main():
     load_scheduled_jobs()
