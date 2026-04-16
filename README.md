@@ -71,6 +71,8 @@ telmgr server remove <id>                  # удалить из реестра
 ```bash
 telmgr status                      # статус сервиса, бота и статистика
 telmgr logs [lines]                # логи контейнера (default: 50)
+telmgr restart                     # перезапустить прокси (telemt)
+telmgr bot restart                 # перезапустить Telegram бота
 telmgr update                      # обновить telmgr и bot.py с GitHub
 telmgr coreupdate                  # обновить Docker образ прокси (telemt)
 telmgr backup                      # создать бэкап

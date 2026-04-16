@@ -516,6 +516,22 @@ def cmd_coreupdate():
     subprocess.run(["docker", "compose", "up", "-d"], cwd=TELEMT_DIR, check=True)
     ok("Обновление завершено!")
 
+def cmd_restart():
+    info("Перезапускаем telemt...")
+    subprocess.run(["docker", "compose", "restart", "telemt"], cwd=TELEMT_DIR, check=True)
+    ok("telemt перезапущен")
+
+def cmd_bot_restart():
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "name=telmgr-bot", "--format", "{{.Names}}"],
+        capture_output=True, text=True
+    )
+    if "telmgr-bot" not in result.stdout:
+        err("Контейнер telmgr-bot не найден")
+    info("Перезапускаем telmgr-bot...")
+    subprocess.run(["docker", "compose", "restart", "telmgr-bot"], cwd=TELEMT_DIR, check=True)
+    ok("telmgr-bot перезапущен")
+
 GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
 TELMGR_BIN = "/usr/local/bin/telmgr"
 
@@ -1128,6 +1144,8 @@ def usage():
 
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера (default: 50)
+  telmgr restart                    Перезапустить прокси (telemt)
+  telmgr bot restart                Перезапустить Telegram бота
   telmgr update                     Обновить telmgr и bot.py с GitHub
   telmgr coreupdate                 Обновить Docker образ прокси (telemt)
   telmgr backup                     Создать бэкап
@@ -1162,6 +1180,9 @@ def main():
     elif section == "restore":
         if len(args) < 2: err("Укажи путь к файлу бэкапа")
         cmd_restore(args[1])
+        return
+    elif section == "restart":
+        cmd_restart()
         return
     elif section == "serve":
         cmd_serve()
@@ -1217,6 +1238,8 @@ def main():
     elif section == "bot":
         if cmd == "setup":
             cmd_bot_setup()
+        elif cmd == "restart":
+            cmd_bot_restart()
         else:
             err(f"Неизвестная команда: {cmd}")
     elif section == "server":
