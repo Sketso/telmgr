@@ -262,12 +262,18 @@ def schedule_user_disable(name: str, expires: str, admin_id: int):
             id=job_id
         )
 
-def load_scheduled_jobs():
+def load_scheduled_jobs() -> list:
     meta = telmgr.load_meta()
+    overdue = []
     for name, data in meta.items():
         if data.get('expires') and not data.get('disabled'):
             admin_id = data.get('admin_id') or SUPER_ADMIN_ID
-            schedule_user_disable(name, data['expires'], admin_id)
+            dt = datetime.strptime(data['expires'], "%Y-%m-%d").replace(hour=12, minute=0)
+            if dt <= datetime.now():
+                overdue.append((name, admin_id))
+            else:
+                schedule_user_disable(name, data['expires'], admin_id)
+    return overdue
 
 # === Admins storage ===
 
@@ -952,8 +958,10 @@ async def add_server_key(message: Message, state: FSMContext):
 
 
 async def main():
-    load_scheduled_jobs()
+    overdue = load_scheduled_jobs()
     scheduler.start()
+    for name, admin_id in overdue:
+        asyncio.create_task(disable_user_job(name, admin_id))
     print("Бот запущен...")
     await dp.start_polling(bot)
 
