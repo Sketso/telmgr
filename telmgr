@@ -839,6 +839,18 @@ def save_servers(data):
     with open(SERVERS_PATH, "w") as f:
         json.dump(data, f, indent=2)
 
+def resolve_server_id(id_or_name):
+    """Возвращает ID сервера по ID или имени (case-insensitive). Падает с err() если не найден."""
+    data = load_servers()
+    servers = data.get("servers", {})
+    if id_or_name in servers:
+        return id_or_name
+    needle = id_or_name.lower()
+    for sid, s in servers.items():
+        if s.get("name", "").lower() == needle:
+            return sid
+    err(f"Сервер '{id_or_name}' не найден")
+
 def cmd_server_list():
     data = load_servers()
     servers = data.get("servers", {})
@@ -872,20 +884,19 @@ def cmd_server_add(name, url, api_key):
     ok(f"Сервер '{name}' добавлен (ID: {sid})")
 
 def cmd_server_remove(sid):
+    sid = resolve_server_id(sid)
     if sid == "local":
         err("Нельзя удалить локальный сервер")
     data = load_servers()
-    if sid not in data.get("servers", {}):
-        err(f"Сервер '{sid}' не найден")
     name = data["servers"][sid].get("name", sid)
     del data["servers"][sid]
     save_servers(data)
     ok(f"Сервер '{name}' удалён")
 
 def cmd_server_rename(sid, new_name):
+    sid = resolve_server_id(sid)
     data = load_servers()
     if sid not in data.get("servers", {}):
-        err(f"Сервер '{sid}' не найден. Список: telmgr server list")
     old_name = data["servers"][sid].get("name", sid)
     data["servers"][sid]["name"] = new_name
     save_servers(data)
@@ -893,9 +904,8 @@ def cmd_server_rename(sid, new_name):
 
 def cmd_server_test(sid):
     import urllib.request, urllib.error
+    sid = resolve_server_id(sid)
     data = load_servers()
-    if sid not in data.get("servers", {}):
-        err(f"Сервер '{sid}' не найден")
     s = data["servers"][sid]
     if s.get("url") == "local":
         ok("Локальный сервер — всегда доступен")
