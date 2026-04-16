@@ -1,8 +1,8 @@
 # telmgr
 
-Инструмент управления пользователями для [Telemt](https://github.com/telemt/telemt) — MTProto прокси-сервера на Rust.
+Инструмент управления пользователями для [Telemt](https://github.com/An0nX/telemt-docker) — MTProto прокси-сервера на Rust.
 
-Форк [An0nX/telemt-docker](https://github.com/An0nX/telemt-docker) с добавленным CLI и Telegram ботом для управления пользователями.
+Предоставляет CLI и Telegram бота для управления пользователями, бэкапами и мониторингом. Поддерживает несколько серверов через один бот.
 
 > 🤖 Проект создавался совместно с AI (Claude, Anthropic) в учебных целях.
 
@@ -58,28 +58,50 @@ telmgr admin add <telegram_id>     # добавить админа
 telmgr admin delete <telegram_id>  # удалить админа
 ```
 
-### Прокси
+### Прокси и обслуживание
 ```bash
 telmgr status                      # статус сервиса и статистика
 telmgr logs [lines]                # логи контейнера (default: 50)
-telmgr update                      # обновить Docker образ
+telmgr update                      # обновить telmgr и bot.py с GitHub
+telmgr coreupdate                  # обновить Docker образ прокси (telemt)
 telmgr backup                      # создать бэкап
 telmgr restore <file>              # восстановить из бэкапа
 ```
 
-> При восстановлении на новом сервере домен должен совпадать с оригинальным.
+> При восстановлении на новом сервере домен и порт должны совпадать с оригинальными.
 
 ---
 
 ## Telegram бот
 
-Устанавливается опционально через `install.sh`. Для создания бота — [@BotFather](https://t.me/BotFather), для получения своего Telegram ID — [@userinfobot](https://t.me/userinfobot).
+Устанавливается опционально через `install.sh`. Поддерживает два режима:
 
-Запускается в Docker вместе с сервисом. Управление:
+- **Master** — полноценный бот, управляет локальным сервером и может подключать удалённые
+- **Slave** — запускает HTTP API на сервере, к которому подключается master-бот
+
+Для создания бота — [@BotFather](https://t.me/BotFather), для получения своего Telegram ID — [@userinfobot](https://t.me/userinfobot).
+
+Если бот не был настроен при установке — добавить его можно позже:
 ```bash
-docker compose -f ~/telemt/docker-compose.yml logs -f telmgr-bot
-docker compose -f ~/telemt/docker-compose.yml restart telmgr-bot
+telmgr bot setup
 ```
+
+### Несколько серверов
+
+Master-бот может управлять несколькими серверами. На каждом дополнительном сервере:
+```bash
+telmgr bot setup   # выбрать slave → получить API ключ и команду регистрации
+```
+
+На master:
+```bash
+telmgr server add "Название" http://<IP>:<PORT> <API_KEY>
+telmgr server list
+telmgr server test <id>
+telmgr server remove <id>
+```
+
+После добавления в боте появляется кнопка переключения серверов.
 
 ---
 
@@ -92,8 +114,10 @@ docker compose -f ~/telemt/docker-compose.yml restart telmgr-bot
 | `TELEMT_HOST` | ✅ | Публичный домен или IP сервера |
 | `TELEMT_PORT` | — | Публичный порт (default: `2053`) |
 | `TELEMT_DIR` | — | Путь к директории с конфигом (default: `~/telemt`) |
-| `BOT_TOKEN` | — | Токен Telegram бота от @BotFather |
-| `SUPER_ADMIN_ID` | — | Telegram ID суперадмина |
+| `BOT_TOKEN` | — | Токен Telegram бота (только master) |
+| `SUPER_ADMIN_ID` | — | Telegram ID суперадмина (только master) |
+| `TELMGR_API_PORT` | — | Порт HTTP API (только slave, default: `8765`) |
+| `TELMGR_API_KEY` | — | Ключ авторизации HTTP API (только slave) |
 
 ---
 
