@@ -1,0 +1,162 @@
+# telmgr
+
+[English](README.md) | **Русский**
+
+Инструмент управления пользователями для [Telemt](https://github.com/An0nX/telemt-docker) — MTProto прокси-сервера на Rust.
+
+Предоставляет CLI и Telegram бота для управления пользователями, бэкапами и мониторингом. Поддерживает несколько серверов через один бот.
+
+> 🤖 Проект создавался совместно с AI (Claude, Anthropic) в учебных целях.
+
+---
+
+## ⚠️ Отказ от ответственности
+
+Этот проект создан исключительно в **образовательных целях** для изучения DevOps практик, Docker, Python и разработки CLI инструментов.
+
+Использование MTProto прокси может быть ограничено или запрещено законодательством вашей страны. Вы несёте полную ответственность за соблюдение применимых местных законов и нормативных актов. Авторы проекта не несут ответственности за любое использование данного программного обеспечения.
+
+---
+
+## Установка
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/install.sh)
+```
+
+Скрипт установит Docker (если нет), создаст конфиг, запустит сервис и установит `telmgr`. Опционально настроит Telegram бота в Docker.
+
+При повторном запуске на уже установленном сервере скрипт предложит **обновление** (telmgr + bot.py, без изменения конфига), либо можно использовать `telmgr update`.
+
+> UFW не устанавливается автоматически — если он есть, порт откроется сам. Если нет — открой вручную.
+
+---
+
+## Удаление
+```bash
+telmgr uninstall
+# или напрямую:
+bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/uninstall.sh)
+```
+
+Скрипт предложит создать бэкап перед удалением.
+
+---
+
+## telmgr CLI
+
+### Пользователи
+```bash
+telmgr user list                   # список пользователей
+telmgr user stats                  # статистика: активных / отключённых / просроченных
+telmgr user add <name> [days]      # добавить (days=0 — бессрочно)
+telmgr user delete <name>          # удалить
+telmgr user disable <name>         # отключить
+telmgr user enable <name>          # включить
+telmgr user limit <name> <days>    # установить лимит (0 — снять и включить)
+telmgr user link <name>            # показать ссылку для подключения
+telmgr user import <name>          # импортировать существующего юзера из конфига
+telmgr user expire [days]          # юзеры с истекающим сроком (default: 7 дней)
+```
+
+### Админы
+```bash
+telmgr admin list                  # список админов
+telmgr admin add <telegram_id>     # добавить админа
+telmgr admin delete <telegram_id>  # удалить админа
+```
+
+### Серверы (multi-server)
+```bash
+telmgr server list                              # список подключённых серверов
+telmgr server add "<name>" <url> <key>          # добавить удалённый сервер
+telmgr server rename <id|name> "<новое имя>"   # переименовать сервер
+telmgr server test <id|name>                    # проверить доступность
+telmgr server remove <id|name>                  # удалить из реестра
+```
+
+### Бот
+```bash
+telmgr bot setup                   # подключить Telegram бота (master) или API сервер (slave)
+telmgr bot restart                 # перезапустить Telegram бота
+telmgr bot logs [lines]            # логи Telegram бота (default: 50)
+```
+
+### Прокси и обслуживание
+```bash
+telmgr status                      # статус сервиса, бота и статистика
+telmgr logs [lines]                # логи контейнера telemt (default: 50)
+telmgr restart                     # перезапустить прокси (telemt)
+telmgr update                      # обновить telmgr и bot.py с GitHub
+telmgr coreupdate                  # обновить Docker образ прокси (telemt)
+telmgr backup                      # создать бэкап
+telmgr backup auto enable [hour]   # включить авто-бэкап (default: 3:00)
+telmgr backup auto disable         # отключить авто-бэкап
+telmgr backup auto                 # статус авто-бэкапа
+telmgr restore <file>              # восстановить из бэкапа
+telmgr uninstall                   # полностью удалить telmgr
+```
+
+> При восстановлении на новом сервере домен и порт должны совпадать с оригинальными — иначе ссылки пользователей перестанут работать.
+
+---
+
+## Telegram бот
+
+Устанавливается опционально через `install.sh`. Поддерживает два режима:
+
+- **Master** — полноценный бот, управляет локальным сервером и может подключать удалённые
+- **Slave** — запускает HTTP API на сервере, к которому подключается master-бот
+
+Для создания бота — [@BotFather](https://t.me/BotFather), для получения своего Telegram ID — [@userinfobot](https://t.me/userinfobot).
+
+Если бот не был настроен при установке — добавить его можно позже:
+```bash
+telmgr bot setup
+```
+
+### Права доступа
+
+- **Суперадмин** — полный доступ ко всем пользователям и серверам
+- **Админ** — управляет только своими пользователями; попытка изменить чужого юзера блокируется
+- Имена пользователей глобально уникальны в пределах одного сервера
+
+### Несколько серверов
+
+Master-бот может управлять несколькими серверами. На каждом дополнительном сервере:
+```bash
+telmgr update
+telmgr bot setup   # выбрать slave → получить API ключ и команду регистрации
+```
+
+На master зарегистрировать новый сервер:
+```bash
+telmgr server add "Название" http://<IP>:8765 <API_KEY>
+```
+
+После добавления в боте появляется кнопка переключения серверов. Список админов общий для всех серверов.
+
+---
+
+## Конфигурация
+
+Все настройки хранятся в `~/telemt/.env`:
+
+| Переменная | Обязательная | Описание |
+|---|---|---|
+| `TELEMT_HOST` | ✅ | Публичный домен или IP сервера |
+| `TELEMT_PORT` | — | Публичный порт (default: `2053`) |
+| `TELEMT_DIR` | — | Путь к директории с конфигом (default: `~/telemt`) |
+| `BOT_TOKEN` | — | Токен Telegram бота (только master) |
+| `SUPER_ADMIN_ID` | — | Telegram ID суперадмина (только master) |
+| `TELMGR_API_PORT` | — | Порт HTTP API (только slave, default: `8765`) |
+| `TELMGR_API_KEY` | — | Ключ авторизации HTTP API (только slave) |
+
+---
+
+## Требования
+
+- Ubuntu 22.04 / 24.04
+- Docker + Docker Compose
+- Python 3.10+
+- UFW (опционально)
+- Права root (рекомендуется)

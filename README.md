@@ -1,5 +1,7 @@
 # telmgr
 
+**English** | [Русский](README.ru.md)
+
 CLI and Telegram bot for managing users of [Telemt](https://github.com/An0nX/telemt-docker) — a Rust-based MTProto proxy server.
 
 Provides user management, backups, monitoring, and multi-server support through a single bot.

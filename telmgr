@@ -1219,9 +1219,14 @@ def cmd_serve():
         server.serve_forever()
 
 
+def _is_russian():
+    lang = os.environ.get("TELMGR_LANG") or os.environ.get("LANG", "")
+    return lang.lower().startswith("ru")
+
 def usage():
     is_slave  = bool(API_KEY)
     is_master = bool(BOT_TOKEN)
+    ru = _is_russian()
 
     if is_slave:
         mode_label = f" {YELLOW}[slave]{RESET}"
@@ -1230,68 +1235,111 @@ def usage():
     else:
         mode_label = ""
 
+    if ru:
+        title    = "telmgr — менеджер пользователей Telemt MTProxy"
+        usage_hd = "Использование:"
+        u = {
+            "user_list":    "  telmgr user list                  Список пользователей",
+            "user_stats":   "  telmgr user stats                 Статистика пользователей",
+            "user_add":     "  telmgr user add <name> [days]     Добавить пользователя (days=0 — бессрочно)",
+            "user_del":     "  telmgr user delete <name>         Удалить пользователя",
+            "user_dis":     "  telmgr user disable <name>        Отключить пользователя",
+            "user_en":      "  telmgr user enable <name>         Включить пользователя",
+            "user_lim":     "  telmgr user limit <name> <days>   Установить лимит (0 — снять)",
+            "user_link":    "  telmgr user link <name>           Показать ссылку",
+            "user_imp":     "  telmgr user import <name>         Импортировать существующего юзера из конфига",
+            "user_exp":     "  telmgr user expire [days]         Юзеры с истекающим сроком (default: 7 дней)",
+            "adm_list":     "  telmgr admin list                 Список админов",
+            "adm_add":      "  telmgr admin add <telegram_id>    Добавить админа",
+            "adm_del":      "  telmgr admin delete <telegram_id> Удалить админа",
+            "bot_setup":    "  telmgr bot setup                  Подключить Telegram бота (master) или API сервер (slave)",
+            "bot_setup_s":  "  telmgr bot setup                  Подключить Telegram бота",
+            "bot_restart":  "  telmgr bot restart                Перезапустить Telegram бота",
+            "bot_logs":     "  telmgr bot logs [lines]           Логи Telegram бота (default: 50)",
+            "srv_list":     "  telmgr server list                Список подключённых серверов",
+            "srv_add":      "  telmgr server add <n> <url> <key> Добавить удалённый сервер",
+            "srv_ren":      "  telmgr server rename <id|name> <name> Переименовать сервер",
+            "srv_rem":      "  telmgr server remove <id|name>    Удалить сервер из реестра",
+            "srv_test":     "  telmgr server test <id|name>      Проверить доступность сервера",
+            "serve":        "  telmgr serve                      Запустить HTTP API сервер (slave mode)",
+            "status":       "  telmgr status                     Статус прокси",
+            "logs":         "  telmgr logs [lines]               Логи контейнера telemt (default: 50)",
+            "restart":      "  telmgr restart                    Перезапустить прокси (telemt)",
+            "update":       "  telmgr update                     Обновить telmgr и bot.py с GitHub",
+            "coreupdate":   "  telmgr coreupdate                 Обновить Docker образ прокси (telemt)",
+            "backup":       "  telmgr backup                     Создать бэкап",
+            "bk_auto":      "  telmgr backup auto [status]       Статус авто-бэкапа",
+            "bk_en":        "  telmgr backup auto enable [hour]  Включить авто-бэкап (default: 3:00)",
+            "bk_dis":       "  telmgr backup auto disable        Отключить авто-бэкап",
+            "restore":      "  telmgr restore <file>             Восстановить из бэкапа",
+            "uninstall":    "  telmgr uninstall                  Полностью удалить telmgr",
+        }
+    else:
+        title    = "telmgr — user manager for Telemt MTProxy"
+        usage_hd = "Usage:"
+        u = {
+            "user_list":    "  telmgr user list                  List users",
+            "user_stats":   "  telmgr user stats                 Stats: active / disabled / overdue",
+            "user_add":     "  telmgr user add <name> [days]     Add user (days=0 — no expiry)",
+            "user_del":     "  telmgr user delete <name>         Delete user",
+            "user_dis":     "  telmgr user disable <name>        Disable user",
+            "user_en":      "  telmgr user enable <name>         Enable user",
+            "user_lim":     "  telmgr user limit <name> <days>   Set expiry limit (0 — remove and enable)",
+            "user_link":    "  telmgr user link <name>           Show connection link",
+            "user_imp":     "  telmgr user import <name>         Import existing user from config",
+            "user_exp":     "  telmgr user expire [days]         Users expiring soon (default: 7 days)",
+            "adm_list":     "  telmgr admin list                 List admins",
+            "adm_add":      "  telmgr admin add <telegram_id>    Add admin",
+            "adm_del":      "  telmgr admin delete <telegram_id> Remove admin",
+            "bot_setup":    "  telmgr bot setup                  Set up Telegram bot (master) or API server (slave)",
+            "bot_setup_s":  "  telmgr bot setup                  Set up Telegram bot",
+            "bot_restart":  "  telmgr bot restart                Restart Telegram bot",
+            "bot_logs":     "  telmgr bot logs [lines]           Telegram bot logs (default: 50)",
+            "srv_list":     "  telmgr server list                List connected servers",
+            "srv_add":      "  telmgr server add <n> <url> <key> Add remote server",
+            "srv_ren":      "  telmgr server rename <id|name> <name> Rename server",
+            "srv_rem":      "  telmgr server remove <id|name>    Remove server from registry",
+            "srv_test":     "  telmgr server test <id|name>      Check server availability",
+            "serve":        "  telmgr serve                      Start HTTP API server (slave mode)",
+            "status":       "  telmgr status                     Proxy, bot, and user status",
+            "logs":         "  telmgr logs [lines]               telemt container logs (default: 50)",
+            "restart":      "  telmgr restart                    Restart proxy (telemt)",
+            "update":       "  telmgr update                     Update telmgr and bot.py from GitHub",
+            "coreupdate":   "  telmgr coreupdate                 Update telemt Docker image",
+            "backup":       "  telmgr backup                     Create backup",
+            "bk_auto":      "  telmgr backup auto [status]       Auto-backup status",
+            "bk_en":        "  telmgr backup auto enable [hour]  Enable auto-backup (default: 3:00)",
+            "bk_dis":       "  telmgr backup auto disable        Disable auto-backup",
+            "restore":      "  telmgr restore <file>             Restore from backup",
+            "uninstall":    "  telmgr uninstall                  Fully remove telmgr",
+        }
+
     lines = [
-        f"\n{BOLD}telmgr — менеджер пользователей Telemt MTProxy{RESET}{mode_label}",
+        f"\n{BOLD}{title}{RESET}{mode_label}",
         "",
-        "Использование:",
-        "  telmgr user add <name> [days]     Добавить пользователя (days=0 — бессрочно)",
-        "  telmgr user delete <name>         Удалить пользователя",
-        "  telmgr user disable <name>        Отключить пользователя",
-        "  telmgr user enable <name>         Включить пользователя",
-        "  telmgr user limit <name> <days>   Установить лимит (0 — снять)",
-        "  telmgr user list                  Список пользователей",
-        "  telmgr user stats                 Статистика пользователей",
-        "  telmgr user link <name>           Показать ссылку",
-        "  telmgr user import <name>         Импортировать существующего юзера из конфига",
-        "  telmgr user expire [days]         Юзеры с истекающим сроком (default: 7 дней)",
+        usage_hd,
+        u["user_list"], u["user_stats"], u["user_add"], u["user_del"],
+        u["user_dis"], u["user_en"], u["user_lim"], u["user_link"],
+        u["user_imp"], u["user_exp"],
     ]
 
     if not is_slave:
-        lines += [
-            "",
-            "  telmgr admin list                 Список админов",
-            "  telmgr admin add <telegram_id>    Добавить админа",
-            "  telmgr admin delete <telegram_id> Удалить админа",
-        ]
+        lines += ["", u["adm_list"], u["adm_add"], u["adm_del"]]
 
     if is_master:
         lines += [
-            "",
-            "  telmgr bot setup                  Подключить Telegram бота (master) или API сервер (slave)",
-            "  telmgr bot restart                Перезапустить Telegram бота",
-            "  telmgr bot logs [lines]           Логи Telegram бота (default: 50)",
-            "",
-            "  telmgr server list                Список подключённых серверов",
-            "  telmgr server add <n> <url> <key> Добавить удалённый сервер",
-            "  telmgr server rename <id|name> <name> Переименовать сервер",
-            "  telmgr server remove <id|name>    Удалить сервер из реестра",
-            "  telmgr server test <id|name>      Проверить доступность сервера",
+            "", u["bot_setup"], u["bot_restart"], u["bot_logs"],
+            "", u["srv_list"], u["srv_add"], u["srv_ren"], u["srv_rem"], u["srv_test"],
         ]
     elif not is_slave:
-        lines += [
-            "",
-            "  telmgr bot setup                  Подключить Telegram бота",
-        ]
+        lines += ["", u["bot_setup_s"]]
 
     if is_slave:
-        lines += [
-            "",
-            "  telmgr serve                      Запустить HTTP API сервер (slave mode)",
-        ]
+        lines += ["", u["serve"]]
 
     lines += [
-        "",
-        "  telmgr status                     Статус прокси",
-        "  telmgr logs [lines]               Логи контейнера telemt (default: 50)",
-        "  telmgr restart                    Перезапустить прокси (telemt)",
-        "  telmgr update                     Обновить telmgr и bot.py с GitHub",
-        "  telmgr coreupdate                 Обновить Docker образ прокси (telemt)",
-        "  telmgr backup                     Создать бэкап",
-        "  telmgr backup auto [status]       Статус авто-бэкапа",
-        "  telmgr backup auto enable [hour]  Включить авто-бэкап (default: 3:00)",
-        "  telmgr backup auto disable        Отключить авто-бэкап",
-        "  telmgr restore <file>             Восстановить из бэкапа",
-        "  telmgr uninstall                  Полностью удалить telmgr",
+        "", u["status"], u["logs"], u["restart"], u["update"], u["coreupdate"],
+        u["backup"], u["bk_auto"], u["bk_en"], u["bk_dis"], u["restore"], u["uninstall"],
         "",
     ]
 
