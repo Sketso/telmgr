@@ -1239,20 +1239,20 @@ def usage():
   telmgr admin delete <telegram_id> Удалить админа
 
   telmgr bot setup                  Подключить Telegram бота (master) или API сервер (slave)
+  telmgr bot restart                Перезапустить Telegram бота
+  telmgr bot logs [lines]           Логи Telegram бота (default: 50)
 
   telmgr server list                Список подключённых серверов
   telmgr server add <n> <url> <key> Добавить удалённый сервер
-  telmgr server rename <id> <name>  Переименовать сервер
-  telmgr server remove <id>         Удалить сервер из реестра
-  telmgr server test <id>           Проверить доступность сервера
+  telmgr server rename <id|name> <name> Переименовать сервер
+  telmgr server remove <id|name>    Удалить сервер из реестра
+  telmgr server test <id|name>      Проверить доступность сервера
 
   telmgr serve                      Запустить HTTP API сервер (slave mode)
 
   telmgr status                     Статус прокси
   telmgr logs [lines]               Логи контейнера telemt (default: 50)
-  telmgr bot logs [lines]           Логи Telegram бота (default: 50)
   telmgr restart                    Перезапустить прокси (telemt)
-  telmgr bot restart                Перезапустить Telegram бота
   telmgr update                     Обновить telmgr и bot.py с GitHub
   telmgr coreupdate                 Обновить Docker образ прокси (telemt)
   telmgr backup                     Создать бэкап
