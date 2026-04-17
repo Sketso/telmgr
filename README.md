@@ -23,12 +23,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/i
 
 Скрипт установит Docker (если нет), создаст конфиг, запустит сервис и установит `telmgr`. Опционально настроит Telegram бота в Docker.
 
+При повторном запуске на уже установленном сервере скрипт предложит **обновление** (telmgr + bot.py, без изменения конфига), либо можно использовать `telmgr update`.
+
 > UFW не устанавливается автоматически — если он есть, порт откроется сам. Если нет — открой вручную.
 
 ---
 
 ## Удаление
 ```bash
+telmgr uninstall
+# или напрямую:
 bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/uninstall.sh)
 ```
 
@@ -41,6 +45,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/u
 ### Пользователи
 ```bash
 telmgr user list                   # список пользователей
+telmgr user stats                  # статистика: активных / отключённых / просроченных
 telmgr user add <name> [days]      # добавить (days=0 — бессрочно)
 telmgr user delete <name>          # удалить
 telmgr user disable <name>         # отключить
@@ -60,23 +65,28 @@ telmgr admin delete <telegram_id>  # удалить админа
 
 ### Серверы (multi-server)
 ```bash
-telmgr server list                         # список подключённых серверов
-telmgr server add "<name>" <url> <key>     # добавить удалённый сервер
-telmgr server rename <id> "<новое имя>"   # переименовать сервер
-telmgr server test <id>                    # проверить доступность
-telmgr server remove <id>                  # удалить из реестра
+telmgr server list                              # список подключённых серверов
+telmgr server add "<name>" <url> <key>          # добавить удалённый сервер
+telmgr server rename <id|name> "<новое имя>"   # переименовать сервер
+telmgr server test <id|name>                    # проверить доступность
+telmgr server remove <id|name>                  # удалить из реестра
 ```
 
 ### Прокси и обслуживание
 ```bash
 telmgr status                      # статус сервиса, бота и статистика
-telmgr logs [lines]                # логи контейнера (default: 50)
+telmgr logs [lines]                # логи контейнера telemt (default: 50)
+telmgr bot logs [lines]            # логи Telegram бота (default: 50)
 telmgr restart                     # перезапустить прокси (telemt)
 telmgr bot restart                 # перезапустить Telegram бота
 telmgr update                      # обновить telmgr и bot.py с GitHub
 telmgr coreupdate                  # обновить Docker образ прокси (telemt)
 telmgr backup                      # создать бэкап
+telmgr backup auto enable [hour]   # включить авто-бэкап (default: 3:00)
+telmgr backup auto disable         # отключить авто-бэкап
+telmgr backup auto                 # статус авто-бэкапа
 telmgr restore <file>              # восстановить из бэкапа
+telmgr uninstall                   # полностью удалить telmgr
 ```
 
 > При восстановлении на новом сервере домен и порт должны совпадать с оригинальными — иначе ссылки пользователей перестанут работать.
