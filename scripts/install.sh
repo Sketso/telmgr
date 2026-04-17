@@ -16,19 +16,19 @@ info() { echo -e "${CYAN}$1${RESET}"; }
 echo -e "\n${BOLD}=== telmgr installer ===${RESET}\n"
 
 # === Root? ===
-[[ $EUID -ne 0 ]] && err "Запусти скрипт от root: sudo bash install.sh"
+[[ $EUID -ne 0 ]] && err "Run as root: sudo bash install.sh"
 
-# === Проверка существующей установки ===
+# === Check existing installation ===
 if command -v telmgr &>/dev/null; then
-    echo -e "${YELLOW}telmgr уже установлен.${RESET}"
-    read -p "Обновить (без изменения конфига)? [Y/n]: " DO_UPGRADE
+    echo -e "${YELLOW}telmgr is already installed.${RESET}"
+    read -p "Upgrade (config unchanged)? [Y/n]: " DO_UPGRADE
     DO_UPGRADE=${DO_UPGRADE:-Y}
     if [[ "$DO_UPGRADE" =~ ^[Yy]$ ]]; then
-        info "Обновляем telmgr..."
+        info "Updating telmgr..."
         curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
         chmod +x /usr/local/bin/telmgr
         cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
-        ok "telmgr обновлён"
+        ok "telmgr updated"
 
         ENV_FILE="${HOME}/telemt/.env"
         TELEMT_DIR_UPGRADE="${HOME}/telemt"
@@ -38,103 +38,103 @@ if command -v telmgr &>/dev/null; then
 
         BOT_PY="$TELEMT_DIR_UPGRADE/bot.py"
         if [ -f "$BOT_PY" ]; then
-            info "Обновляем bot.py..."
+            info "Updating bot.py..."
             curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$BOT_PY"
-            ok "bot.py обновлён"
+            ok "bot.py updated"
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q telmgr-bot; then
                 docker compose -f "$TELEMT_DIR_UPGRADE/docker-compose.yml" restart telmgr-bot
-                ok "telmgr-bot перезапущен"
+                ok "telmgr-bot restarted"
             fi
         fi
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q telmgr-api; then
             docker compose -f "$TELEMT_DIR_UPGRADE/docker-compose.yml" restart telmgr-api
-            ok "telmgr-api перезапущен"
+            ok "telmgr-api restarted"
         fi
         echo ""
-        echo -e "${BOLD}=== Обновление завершено ===${RESET}"
+        echo -e "${BOLD}=== Upgrade complete ===${RESET}"
         exit 0
     fi
 fi
 
 # === UFW ===
 if command -v ufw &>/dev/null; then
-    ok "UFW найден"
+    ok "UFW found"
 else
-    warn "UFW не установлен — порт нужно открыть вручную после установки"
+    warn "UFW not installed — open the port manually after installation"
 fi
 
 # === Docker ===
 if command -v docker &>/dev/null; then
-    ok "Docker уже установлен"
+    ok "Docker already installed"
 else
-    info "Устанавливаем Docker..."
+    info "Installing Docker..."
     curl -fsSL https://get.docker.com | sh
-    ok "Docker установлен"
+    ok "Docker installed"
 fi
 
 # === Python3 ===
 if command -v python3 &>/dev/null; then
-    ok "Python3 найден"
+    ok "Python3 found"
 else
-    info "Устанавливаем Python3..."
+    info "Installing Python3..."
     apt-get install -y python3 -q
-    ok "Python3 установлен"
+    ok "Python3 installed"
 fi
 
 # === pip3 ===
 if ! command -v pip3 &>/dev/null; then
-    info "Устанавливаем python3-pip..."
+    info "Installing python3-pip..."
     apt-get install -y python3-pip -q
-    ok "python3-pip установлен"
+    ok "python3-pip installed"
 fi
 
-# === Запрашиваем параметры ===
+# === Parameters ===
 echo ""
-read -p "Введи публичный домен или IP сервера: " TELEMT_HOST
+read -p "Enter public domain or server IP: " TELEMT_HOST
 TELEMT_HOST=$(echo "$TELEMT_HOST" | tr -cd '[:alnum:].-')
-[[ -z "$TELEMT_HOST" ]] && err "Домен не может быть пустым"
+[[ -z "$TELEMT_HOST" ]] && err "Domain cannot be empty"
 
-read -p "Введи порт прокси [2053]: " TELEMT_PORT
+read -p "Enter proxy port [2053]: " TELEMT_PORT
 TELEMT_PORT=$(echo "${TELEMT_PORT:-2053}" | tr -cd '[:digit:]')
 
-read -p "Введи имя первого пользователя [myproxy]: " FIRST_USER
+read -p "Enter first username [myproxy]: " FIRST_USER
 FIRST_USER=${FIRST_USER:-myproxy}
 
 # === Telegram Bot ===
 echo ""
-read -p "Установить Telegram бота для управления? [y/N]: " INSTALL_BOT
+read -p "Install Telegram bot for management? [y/N]: " INSTALL_BOT
 INSTALL_BOT_ENABLED=false
 BOT_SLAVE=false
 if [[ "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
     INSTALL_BOT_ENABLED=true
     echo ""
-    read -p "Режим: [M]aster (новый бот) или [s]lave (подключить к существующему)? [M/s]: " BOT_MODE
+    read -p "Mode: [M]aster (new bot) or [s]lave (connect to existing)? [M/s]: " BOT_MODE
     BOT_MODE=${BOT_MODE:-M}
     if [[ "$BOT_MODE" =~ ^[Ss]$ ]]; then
         BOT_SLAVE=true
         TELMGR_API_KEY=$(openssl rand -hex 16)
-        read -p "Порт API сервера [8765]: " TELMGR_API_PORT
+        read -p "API server port [8765]: " TELMGR_API_PORT
         TELMGR_API_PORT=${TELMGR_API_PORT:-8765}
     else
         echo ""
-        info "Для создания бота напиши @BotFather в Telegram -> /newbot"
-        info "Для получения своего Telegram ID напиши @userinfobot"
+        info "To create a bot: message @BotFather in Telegram -> /newbot"
+        info "To get your Telegram ID: message @userinfobot"
         echo ""
-        read -p "Название этого сервера [Local]: " SERVER_NAME
+        read -p "Name of this server [Local]: " SERVER_NAME
         SERVER_NAME=${SERVER_NAME:-Local}
-        read -p "Введи BOT_TOKEN от @BotFather: " BOT_TOKEN
-        [[ -z "$BOT_TOKEN" ]] && err "BOT_TOKEN не может быть пустым"
-        read -p "Введи свой Telegram ID (суперадмин): " SUPER_ADMIN_ID
-        [[ -z "$SUPER_ADMIN_ID" ]] && err "SUPER_ADMIN_ID не может быть пустым"
+        read -p "Enter BOT_TOKEN from @BotFather: " BOT_TOKEN
+        [[ -z "$BOT_TOKEN" ]] && err "BOT_TOKEN cannot be empty"
+        read -p "Enter your Telegram ID (superadmin): " SUPER_ADMIN_ID
+        [[ -z "$SUPER_ADMIN_ID" ]] && err "SUPER_ADMIN_ID cannot be empty"
     fi
 fi
 
-# === Директория ===
+# === Directory ===
 TELEMT_DIR="${TELEMT_DIR:-$HOME/telemt}"
 mkdir -p "$TELEMT_DIR"
-ok "Директория $TELEMT_DIR создана"
+ok "Directory $TELEMT_DIR created"
 
-# === Генерируем секрет ===
+# === Generate secret ===
 SECRET=$(openssl rand -hex 16)
 
 # === .env ===
@@ -155,7 +155,7 @@ TELMGR_API_PORT=$TELMGR_API_PORT
 TELMGR_API_KEY=$TELMGR_API_KEY
 EOF
 fi
-ok ".env создан"
+ok ".env created"
 
 # === telemt.toml ===
 cat > "$TELEMT_DIR/telemt.toml" << EOF
@@ -194,7 +194,7 @@ type = "direct"
 enabled = true
 weight = 10
 EOF
-ok "telemt.toml создан"
+ok "telemt.toml created"
 
 # === docker-compose.yml ===
 TELEMT_SERVICE=$(cat << EOF
@@ -229,7 +229,7 @@ EOF
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     # Master: telemt + telmgr-bot
     curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$TELEMT_DIR/bot.py"
-    ok "bot.py скопирован в $TELEMT_DIR"
+    ok "bot.py copied to $TELEMT_DIR"
 
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
 $TELEMT_SERVICE
@@ -294,16 +294,16 @@ else
     # No bot
     echo "$TELEMT_SERVICE" > "$TELEMT_DIR/docker-compose.yml"
 fi
-ok "docker-compose.yml создан"
+ok "docker-compose.yml created"
 
-# === Устанавливаем telmgr ===
+# === Install telmgr ===
 curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
 pip3 install python-dotenv --break-system-packages -q
-ok "telmgr установлен в /usr/local/bin"
+ok "telmgr installed to /usr/local/bin"
 
-# === Метаданные первого юзера ===
+# === First user metadata ===
 cat > "$TELEMT_DIR/.telmgr-meta.json" << EOF
 {
   "$FIRST_USER": {
@@ -314,7 +314,7 @@ cat > "$TELEMT_DIR/.telmgr-meta.json" << EOF
   }
 }
 EOF
-ok "Метаданные созданы"
+ok "User metadata created"
 
 # === admins.json ===
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
@@ -330,9 +330,9 @@ if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
   "pending": {}
 }
 EOF
-    ok ".telmgr-admins.json создан"
+    ok ".telmgr-admins.json created"
 
-    # Реестр серверов для master
+    # Server registry for master
     cat > "$TELEMT_DIR/.telmgr-servers.json" << EOF
 {
   "servers": {
@@ -346,58 +346,58 @@ EOF
   }
 }
 EOF
-    ok ".telmgr-servers.json создан"
+    ok ".telmgr-servers.json created"
 fi
 
 # === UFW ===
 if command -v ufw &>/dev/null; then
     ufw allow "$TELEMT_PORT/tcp" comment "Telemt MTProxy"
-    ok "Порт $TELEMT_PORT открыт в UFW"
+    ok "Port $TELEMT_PORT opened in UFW"
     if $BOT_SLAVE; then
         ufw allow "$TELMGR_API_PORT/tcp" comment "telmgr API"
-        ok "Порт $TELMGR_API_PORT открыт в UFW"
+        ok "Port $TELMGR_API_PORT opened in UFW"
     fi
 fi
 
-# === Запускаем Docker ===
+# === Start Docker ===
 cd "$TELEMT_DIR"
 docker compose up -d
-ok "Telemt запущен"
+ok "Telemt started"
 
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
-    info "Ожидаем запуска бота..."
+    info "Waiting for bot to start..."
     sleep 15
     BOT_STATUS=$(docker inspect --format='{{.State.Status}}' telmgr-bot 2>/dev/null)
     BOT_LOGS=$(docker logs telmgr-bot 2>&1 | tail -5)
-    if echo "$BOT_LOGS" | grep -q "Бот запущен"; then
-        ok "Бот запущен в Docker"
+    if echo "$BOT_LOGS" | grep -q "Bot started"; then
+        ok "Bot is running in Docker"
     elif [ "$BOT_STATUS" = "running" ]; then
-        ok "Бот запущен в Docker"
-        info "Логи: docker compose logs -f telmgr-bot"
+        ok "Bot is running in Docker"
+        info "Logs: docker compose logs -f telmgr-bot"
     else
-        warn "Бот не запустился! Проверь логи:"
+        warn "Bot failed to start! Check logs:"
         echo "$BOT_LOGS"
-        warn "Логи: docker compose logs telmgr-bot"
+        warn "Logs: docker compose logs telmgr-bot"
     fi
 fi
 
-# === Итог ===
+# === Summary ===
 DOMAIN_HEX=$(echo -n "$TELEMT_HOST" | xxd -p)
 LINK="tg://proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
 
 echo ""
-echo -e "${BOLD}=== Готово! ===${RESET}"
-echo -e "Пользователь: ${CYAN}$FIRST_USER${RESET}"
-echo -e "Ссылка:       ${CYAN}$LINK${RESET}"
+echo -e "${BOLD}=== Done! ===${RESET}"
+echo -e "User:  ${CYAN}$FIRST_USER${RESET}"
+echo -e "Link:  ${CYAN}$LINK${RESET}"
 echo ""
 if $BOT_SLAVE; then
-    echo -e "${BOLD}=== Slave сервер: регистрация ===${RESET}"
-    echo -e "API порт:  ${CYAN}$TELMGR_API_PORT${RESET}"
-    echo -e "API ключ:  ${CYAN}$TELMGR_API_KEY${RESET}"
+    echo -e "${BOLD}=== Slave server: registration ===${RESET}"
+    echo -e "API port:  ${CYAN}$TELMGR_API_PORT${RESET}"
+    echo -e "API key:   ${CYAN}$TELMGR_API_KEY${RESET}"
     echo ""
-    echo -e "На Master сервере выполни:"
-    echo -e "  ${BOLD}telmgr server add \"Название\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
+    echo -e "On the master server run:"
+    echo -e "  ${BOLD}telmgr server add \"Name\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
     echo ""
 fi
-echo -e "Управление: ${BOLD}telmgr --help${RESET}"
+echo -e "Manage: ${BOLD}telmgr --help${RESET}"
 echo ""

@@ -15,52 +15,52 @@ err()  { echo -e "${RED}❌ $1${RESET}"; exit 1; }
 
 echo -e "\n${BOLD}=== telmgr uninstaller ===${RESET}\n"
 
-[[ $EUID -ne 0 ]] && err "Запусти от root"
+[[ $EUID -ne 0 ]] && err "Run as root"
 
-# Читаем TELEMT_DIR из .env если есть
+# Read TELEMT_DIR from .env if available
 ENV_FILE="${HOME}/telemt/.env"
 if [ -f "$ENV_FILE" ]; then
     TELEMT_DIR=$(grep "^TELEMT_DIR=" "$ENV_FILE" | cut -d'=' -f2)
 fi
 TELEMT_DIR="${TELEMT_DIR:-$HOME/telemt}"
 
-# === Бэкап ===
-read -p "Создать бэкап перед удалением? [y/N]: " DO_BACKUP
+# === Backup ===
+read -p "Create backup before removal? [y/N]: " DO_BACKUP
 if [[ "$DO_BACKUP" =~ ^[Yy]$ ]]; then
     if command -v telmgr &>/dev/null; then
         telmgr backup
     else
-        warn "telmgr не найден — бэкап пропущен"
+        warn "telmgr not found — backup skipped"
     fi
 fi
 
-# === Останавливаем systemd бота (старые установки) ===
+# === Stop systemd bot service (legacy installs) ===
 if systemctl is-active --quiet telmgr-bot 2>/dev/null; then
     systemctl stop telmgr-bot
     systemctl disable telmgr-bot
     rm -f /etc/systemd/system/telmgr-bot.service
     systemctl daemon-reload
-    ok "Systemd сервис бота удалён"
+    ok "Systemd bot service removed"
 fi
 
-# === Останавливаем Docker (прокси + бот) ===
+# === Stop Docker containers ===
 if [ -f "$TELEMT_DIR/docker-compose.yml" ]; then
     docker compose -f "$TELEMT_DIR/docker-compose.yml" down
-    ok "Docker контейнеры остановлены"
+    ok "Docker containers stopped"
 fi
 
-# === Удаляем файлы ===
+# === Remove files ===
 rm -rf "$TELEMT_DIR"
-ok "Директория $TELEMT_DIR удалена"
+ok "Directory $TELEMT_DIR removed"
 
 rm -f /usr/local/bin/telmgr
 rm -f /usr/local/bin/telmgr.py
-ok "telmgr удалён из /usr/local/bin"
+ok "telmgr removed from /usr/local/bin"
 
-# === Чистим cron ===
+# === Clean cron ===
 crontab -l 2>/dev/null | grep -v "telmgr" | crontab - 2>/dev/null || true
-ok "Cron задачи удалены"
+ok "Cron jobs removed"
 
 echo ""
-echo -e "${BOLD}=== Готово! telmgr полностью удалён ===${RESET}"
+echo -e "${BOLD}=== Done! telmgr fully removed ===${RESET}"
 echo ""
