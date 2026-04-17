@@ -72,13 +72,18 @@ telmgr server test <id|name>                    # проверить досту�
 telmgr server remove <id|name>                  # удалить из реестра
 ```
 
+### Бот
+```bash
+telmgr bot setup                   # подключить Telegram бота (master) или API сервер (slave)
+telmgr bot restart                 # перезапустить Telegram бота
+telmgr bot logs [lines]            # логи Telegram бота (default: 50)
+```
+
 ### Прокси и обслуживание
 ```bash
 telmgr status                      # статус сервиса, бота и статистика
 telmgr logs [lines]                # логи контейнера telemt (default: 50)
-telmgr bot logs [lines]            # логи Telegram бота (default: 50)
 telmgr restart                     # перезапустить прокси (telemt)
-telmgr bot restart                 # перезапустить Telegram бота
 telmgr update                      # обновить telmgr и bot.py с GitHub
 telmgr coreupdate                  # обновить Docker образ прокси (telemt)
 telmgr backup                      # создать бэкап
