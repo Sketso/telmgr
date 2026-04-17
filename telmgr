@@ -23,7 +23,15 @@ for _p in _env_paths:
         break
 
 TELEMT_DIR = os.environ.get("TELEMT_DIR", os.path.join(os.path.expanduser("~"), "telemt"))
-TOML_PATH = os.path.join(TELEMT_DIR, "telemt.toml")
+PROXY_ENGINE = os.environ.get("PROXY_ENGINE", "telemt")  # telemt | mtproto_zig
+if PROXY_ENGINE == "mtproto_zig":
+    TOML_PATH       = os.path.join(TELEMT_DIR, "mtproto-zig.toml")
+    PROXY_CONTAINER = "mtproto-zig"
+    PROXY_IMAGE     = "ghcr.io/sleep3r/mtproto.zig:latest"
+else:
+    TOML_PATH       = os.path.join(TELEMT_DIR, "telemt.toml")
+    PROXY_CONTAINER = "telemt"
+    PROXY_IMAGE     = "whn0thacked/telemt-docker:latest"
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
 SERVERS_PATH = os.path.join(TELEMT_DIR, ".telmgr-servers.json")
@@ -468,11 +476,11 @@ def cmd_admin_delete(telegram_id):
 def cmd_status():
     result = subprocess.run(
         ["docker", "inspect", "--format",
-         "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
+         "{{.State.Status}} {{.State.StartedAt}}", PROXY_CONTAINER],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        err("Контейнер telemt не найден")
+        err(f"Container {PROXY_CONTAINER} not found")
 
     status, started_at = result.stdout.strip().split(" ", 1)
     started_dt = datetime.fromisoformat(started_at[:19])
@@ -520,7 +528,7 @@ def cmd_status():
     print()
 
 def cmd_logs(lines=50):
-    subprocess.run(["docker", "logs", "--tail", str(lines), "telemt"])
+    subprocess.run(["docker", "logs", "--tail", str(lines), PROXY_CONTAINER])
 
 def cmd_bot_logs(lines=50):
     subprocess.run(["docker", "logs", "--tail", str(lines), "telmgr-bot"])
@@ -552,16 +560,16 @@ def cmd_expire(days=7):
 def cmd_coreupdate():
     ru = _is_russian()
     info("Updating Docker image..." if not ru else "Обновляем Docker образ...")
-    subprocess.run(["docker", "pull", "whn0thacked/telemt-docker:latest"], check=True)
+    subprocess.run(["docker", "pull", PROXY_IMAGE], check=True)
     info("Restarting container..." if not ru else "Перезапускаем контейнер...")
     subprocess.run(["docker", "compose", "up", "-d"], cwd=TELEMT_DIR, check=True)
     ok("Update complete!" if not ru else "Обновление завершено!")
 
 def cmd_restart():
     ru = _is_russian()
-    info("Restarting telemt..." if not ru else "Перезапускаем telemt...")
-    subprocess.run(["docker", "compose", "restart", "telemt"], cwd=TELEMT_DIR, check=True)
-    ok("telemt restarted" if not ru else "telemt перезапущен")
+    info(f"Restarting {PROXY_CONTAINER}..." if not ru else f"Перезапускаем {PROXY_CONTAINER}...")
+    subprocess.run(["docker", "compose", "restart", PROXY_CONTAINER], cwd=TELEMT_DIR, check=True)
+    ok(f"{PROXY_CONTAINER} restarted" if not ru else f"{PROXY_CONTAINER} перезапущен")
 
 def cmd_bot_restart():
     ru = _is_russian()
@@ -1113,7 +1121,7 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
         uptime_seconds = 0
         try:
             result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", "telemt"],
+                ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", PROXY_CONTAINER],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
