@@ -306,6 +306,42 @@ def cmd_list():
         print(f"{name:<15} {status:<20} {created:<12} {expires}")
     print()
 
+def cmd_stats():
+    content = read_toml()
+    users = get_users_from_toml(content)
+    meta = load_meta()
+    now = datetime.now()
+
+    total = len(users)
+    active = 0
+    disabled = 0
+    overdue = 0
+    expiring_soon = 0
+
+    for name, data in users.items():
+        m = meta.get(name, {})
+        if data["disabled"]:
+            disabled += 1
+        else:
+            active += 1
+        if m.get("expires"):
+            exp = datetime.strptime(m["expires"], "%Y-%m-%d")
+            if exp < now and not data["disabled"]:
+                overdue += 1
+            elif (exp - now).days <= 7 and not data["disabled"]:
+                expiring_soon += 1
+
+    print(f"\n{BOLD}Статистика пользователей{RESET}")
+    print("─" * 30)
+    print(f"  Всего:           {total}")
+    print(f"  Активных:        {GREEN}{active}{RESET}")
+    print(f"  Отключённых:     {disabled}")
+    if overdue:
+        print(f"  Просроченных:    {RED}{overdue}{RESET}")
+    if expiring_soon:
+        print(f"  Истекают (7д):   {YELLOW}{expiring_soon}{RESET}")
+    print()
+
 def cmd_link(name):
     content = read_toml()
     users = get_users_from_toml(content)
@@ -485,6 +521,9 @@ def cmd_status():
 def cmd_logs(lines=50):
     subprocess.run(["docker", "logs", "--tail", str(lines), "telemt"])
 
+def cmd_bot_logs(lines=50):
+    subprocess.run(["docker", "logs", "--tail", str(lines), "telmgr-bot"])
+
 def cmd_expire(days=7):
     meta = load_meta()
     content = read_toml()
@@ -534,6 +573,23 @@ def cmd_bot_restart():
 
 GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
 TELMGR_BIN = "/usr/local/bin/telmgr"
+
+def cmd_uninstall():
+    import urllib.request, tempfile, stat
+    if os.geteuid() != 0:
+        err("Запусти от root")
+    url = f"{GITHUB_RAW}/scripts/uninstall.sh"
+    with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        urllib.request.urlretrieve(url, tmp_path)
+        os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC)
+        subprocess.run(["bash", tmp_path], check=False)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 def cmd_update():
     import urllib.request, shutil, tempfile, stat
@@ -782,6 +838,44 @@ def _cmd_bot_setup_slave():
     print(f"  {BOLD}telmgr server add \"Название\" http://{server_ip}:{api_port} {api_key}{RESET}")
     print()
     warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
+
+CRON_TAG = "# telmgr-autobackup"
+
+def cmd_backup_auto_enable(hour=3):
+    import subprocess as sp
+    tag = CRON_TAG
+    cron_line = f"0 {hour} * * * /usr/local/bin/telmgr backup  {tag}"
+    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
+    existing = result.stdout if result.returncode == 0 else ""
+    if tag in existing:
+        ok(f"Авто-бэкап уже включён (строка с '{tag}' уже есть)")
+        return
+    new_cron = existing.rstrip("\n") + "\n" + cron_line + "\n"
+    sp.run(["crontab", "-"], input=new_cron, text=True, check=True)
+    ok(f"Авто-бэкап включён: ежедневно в {hour:02d}:00")
+
+def cmd_backup_auto_disable():
+    import subprocess as sp
+    tag = CRON_TAG
+    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
+    if result.returncode != 0 or tag not in result.stdout:
+        warn("Авто-бэкап не был включён")
+        return
+    new_cron = "\n".join(
+        line for line in result.stdout.splitlines() if tag not in line
+    ) + "\n"
+    sp.run(["crontab", "-"], input=new_cron, text=True, check=True)
+    ok("Авто-бэкап отключён")
+
+def cmd_backup_auto_status():
+    import subprocess as sp
+    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
+    if result.returncode != 0 or CRON_TAG not in result.stdout:
+        info("Авто-бэкап: отключён")
+        return
+    for line in result.stdout.splitlines():
+        if CRON_TAG in line:
+            info(f"Авто-бэкап: включён  →  {line.split(CRON_TAG)[0].strip()}")
 
 def cmd_backup():
     import tarfile
@@ -1135,6 +1229,7 @@ def usage():
   telmgr user enable <name>         Включить пользователя
   telmgr user limit <name> <days>   Установить лимит (0 — снять)
   telmgr user list                  Список пользователей
+  telmgr user stats                 Статистика пользователей
   telmgr user link <name>           Показать ссылку
   telmgr user import <name>         Импортировать существующего юзера из конфига
   telmgr user expire [days]         Юзеры с истекающим сроком (default: 7 дней)
@@ -1154,13 +1249,18 @@ def usage():
   telmgr serve                      Запустить HTTP API сервер (slave mode)
 
   telmgr status                     Статус прокси
-  telmgr logs [lines]               Логи контейнера (default: 50)
+  telmgr logs [lines]               Логи контейнера telemt (default: 50)
+  telmgr bot logs [lines]           Логи Telegram бота (default: 50)
   telmgr restart                    Перезапустить прокси (telemt)
   telmgr bot restart                Перезапустить Telegram бота
   telmgr update                     Обновить telmgr и bot.py с GitHub
   telmgr coreupdate                 Обновить Docker образ прокси (telemt)
   telmgr backup                     Создать бэкап
+  telmgr backup auto [status]       Статус авто-бэкапа
+  telmgr backup auto enable [hour]  Включить авто-бэкап (default: 3:00)
+  telmgr backup auto disable        Отключить авто-бэкап
   telmgr restore <file>             Восстановить из бэкапа
+  telmgr uninstall                  Полностью удалить telmgr
 """)
 
 def main():
@@ -1186,7 +1286,17 @@ def main():
         cmd_coreupdate()
         return
     elif section == "backup":
-        cmd_backup()
+        if len(args) > 1 and args[1] == "auto":
+            sub = args[2] if len(args) > 2 else "status"
+            if sub == "enable":
+                hour = int(args[3]) if len(args) > 3 else 3
+                cmd_backup_auto_enable(hour)
+            elif sub == "disable":
+                cmd_backup_auto_disable()
+            else:
+                cmd_backup_auto_status()
+        else:
+            cmd_backup()
         return
     elif section == "restore":
         if len(args) < 2: err("Укажи путь к файлу бэкапа")
@@ -1197,6 +1307,9 @@ def main():
         return
     elif section == "serve":
         cmd_serve()
+        return
+    elif section == "uninstall":
+        cmd_uninstall()
         return
 
     if len(args) < 2:
@@ -1233,6 +1346,8 @@ def main():
         elif cmd == "expire":
             days = args[2] if len(args) > 2 else 7
             cmd_expire(days)
+        elif cmd == "stats":
+            cmd_stats()
         else:
             err(f"Неизвестная команда: {cmd}")
     elif section == "admin":
@@ -1251,6 +1366,9 @@ def main():
             cmd_bot_setup()
         elif cmd == "restart":
             cmd_bot_restart()
+        elif cmd == "logs":
+            lines = int(args[2]) if len(args) > 2 else 50
+            cmd_bot_logs(lines)
         else:
             err(f"Неизвестная команда: {cmd}")
     elif section == "server":

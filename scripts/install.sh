@@ -18,6 +18,44 @@ echo -e "\n${BOLD}=== telmgr installer ===${RESET}\n"
 # === Root? ===
 [[ $EUID -ne 0 ]] && err "Запусти скрипт от root: sudo bash install.sh"
 
+# === Проверка существующей установки ===
+if command -v telmgr &>/dev/null; then
+    echo -e "${YELLOW}telmgr уже установлен.${RESET}"
+    read -p "Обновить (без изменения конфига)? [Y/n]: " DO_UPGRADE
+    DO_UPGRADE=${DO_UPGRADE:-Y}
+    if [[ "$DO_UPGRADE" =~ ^[Yy]$ ]]; then
+        info "Обновляем telmgr..."
+        curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
+        chmod +x /usr/local/bin/telmgr
+        cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
+        ok "telmgr обновлён"
+
+        ENV_FILE="${HOME}/telemt/.env"
+        TELEMT_DIR_UPGRADE="${HOME}/telemt"
+        if [ -f "$ENV_FILE" ]; then
+            TELEMT_DIR_UPGRADE=$(grep "^TELEMT_DIR=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || echo "$HOME/telemt")
+        fi
+
+        BOT_PY="$TELEMT_DIR_UPGRADE/bot.py"
+        if [ -f "$BOT_PY" ]; then
+            info "Обновляем bot.py..."
+            curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$BOT_PY"
+            ok "bot.py обновлён"
+            if docker ps --format '{{.Names}}' 2>/dev/null | grep -q telmgr-bot; then
+                docker compose -f "$TELEMT_DIR_UPGRADE/docker-compose.yml" restart telmgr-bot
+                ok "telmgr-bot перезапущен"
+            fi
+        fi
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q telmgr-api; then
+            docker compose -f "$TELEMT_DIR_UPGRADE/docker-compose.yml" restart telmgr-api
+            ok "telmgr-api перезапущен"
+        fi
+        echo ""
+        echo -e "${BOLD}=== Обновление завершено ===${RESET}"
+        exit 0
+    fi
+fi
+
 # === UFW ===
 if command -v ufw &>/dev/null; then
     ok "UFW найден"
