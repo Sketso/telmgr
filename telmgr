@@ -897,6 +897,7 @@ def cmd_server_rename(sid, new_name):
     sid = resolve_server_id(sid)
     data = load_servers()
     if sid not in data.get("servers", {}):
+        err(f"Сервер '{sid}' не найден")
     old_name = data["servers"][sid].get("name", sid)
     data["servers"][sid]["name"] = new_name
     save_servers(data)
