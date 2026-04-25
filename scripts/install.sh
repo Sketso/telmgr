@@ -88,14 +88,36 @@ if ! command -v pip3 &>/dev/null; then
     ok "python3-pip installed"
 fi
 
+# === Engine selection ===
+echo ""
+echo "Select proxy engine:"
+echo "  [1] telemt-docker (default) — stable, low memory (~12 MB)"
+echo "  [2] mtproto.zig — advanced DPI bypass, recommended for Apple devices (~1 MB)"
+read -p "Enter choice [1]: " ENGINE_CHOICE
+ENGINE_CHOICE=${ENGINE_CHOICE:-1}
+
+if [[ "$ENGINE_CHOICE" == "2" ]]; then
+    PROXY_ENGINE=mtproto_zig
+    PROXY_CONTAINER=mtproto-zig
+    PROXY_IMAGE="ghcr.io/sleep3r/mtproto.zig:latest"
+    DEFAULT_PORT=8443
+    warn "Note: port 443 gives best DPI bypass results, but may already be in use on your server."
+    info "First Docker build may take 3-5 minutes (compiling Zig)."
+else
+    PROXY_ENGINE=telemt
+    PROXY_CONTAINER=telemt
+    PROXY_IMAGE="whn0thacked/telemt-docker:latest"
+    DEFAULT_PORT=2053
+fi
+
 # === Parameters ===
 echo ""
 read -p "Enter public domain or server IP: " TELEMT_HOST
 TELEMT_HOST=$(echo "$TELEMT_HOST" | tr -cd '[:alnum:].-')
 [[ -z "$TELEMT_HOST" ]] && err "Domain cannot be empty"
 
-read -p "Enter proxy port [2053]: " TELEMT_PORT
-TELEMT_PORT=$(echo "${TELEMT_PORT:-2053}" | tr -cd '[:digit:]')
+read -p "Enter proxy port [$DEFAULT_PORT]: " TELEMT_PORT
+TELEMT_PORT=$(echo "${TELEMT_PORT:-$DEFAULT_PORT}" | tr -cd '[:digit:]')
 
 read -p "Enter first username [myproxy]: " FIRST_USER
 FIRST_USER=${FIRST_USER:-myproxy}
@@ -142,6 +164,7 @@ cat > "$TELEMT_DIR/.env" << EOF
 TELEMT_HOST=$TELEMT_HOST
 TELEMT_PORT=$TELEMT_PORT
 TELEMT_DIR=$TELEMT_DIR
+PROXY_ENGINE=$PROXY_ENGINE
 EOF
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     cat >> "$TELEMT_DIR/.env" << EOF
@@ -157,8 +180,56 @@ EOF
 fi
 ok ".env created"
 
-# === telemt.toml ===
-cat > "$TELEMT_DIR/telemt.toml" << EOF
+# === Proxy config & service definition ===
+if [[ "$PROXY_ENGINE" == "mtproto_zig" ]]; then
+    PROXY_CONFIG="$TELEMT_DIR/mtproto-zig.toml"
+    cat > "$PROXY_CONFIG" << EOF
+[general]
+use_middle_proxy = true
+
+[server]
+port = $TELEMT_PORT
+bind_addr = "0.0.0.0"
+
+[censorship]
+tls_domain = "$TELEMT_HOST"
+fast_mode = true
+drs = true
+
+[monitor]
+enabled = false
+
+[metrics]
+enabled = false
+
+[upstream]
+mode = "auto"
+
+[access.users]
+$FIRST_USER = "$SECRET"
+EOF
+    ok "mtproto-zig.toml created"
+
+    TELEMT_SERVICE=$(cat << EOF
+services:
+  mtproto-zig:
+    image: ghcr.io/sleep3r/mtproto.zig:latest
+    container_name: mtproto-zig
+    restart: unless-stopped
+    volumes:
+      - ./mtproto-zig.toml:/etc/mtproto-proxy/config.toml:ro
+    ports:
+      - "$TELEMT_PORT:$TELEMT_PORT/tcp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+EOF
+)
+else
+    PROXY_CONFIG="$TELEMT_DIR/telemt.toml"
+    cat > "$PROXY_CONFIG" << EOF
 show_link = ["$FIRST_USER"]
 
 [general]
@@ -194,10 +265,9 @@ type = "direct"
 enabled = true
 weight = 10
 EOF
-ok "telemt.toml created"
+    ok "telemt.toml created"
 
-# === docker-compose.yml ===
-TELEMT_SERVICE=$(cat << EOF
+    TELEMT_SERVICE=$(cat << EOF
 services:
   telemt:
     image: whn0thacked/telemt-docker:latest
@@ -225,6 +295,7 @@ services:
         max-file: "3"
 EOF
 )
+fi
 
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     # Master: telemt + telmgr-bot
@@ -245,7 +316,7 @@ $TELEMT_SERVICE
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - ./.telmgr-admins.json:/app/data/.telmgr-admins.json
       - ./.telmgr-servers.json:/app/data/.telmgr-servers.json
-      - ./telemt.toml:/app/data/telemt.toml
+      - $PROXY_CONFIG:/app/data/$(basename "$PROXY_CONFIG")
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
     environment:
       - TELEMT_DIR=/app/data
@@ -273,7 +344,7 @@ $TELEMT_SERVICE
     volumes:
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
-      - ./telemt.toml:/app/data/telemt.toml
+      - $PROXY_CONFIG:/app/data/$(basename "$PROXY_CONFIG")
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
     environment:
       - TELEMT_DIR=/app/data
