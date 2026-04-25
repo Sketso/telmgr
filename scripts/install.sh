@@ -56,13 +56,6 @@ if command -v telmgr &>/dev/null; then
     fi
 fi
 
-# === UFW ===
-if command -v ufw &>/dev/null; then
-    ok "UFW found"
-else
-    warn "UFW not installed — open the port manually after installation"
-fi
-
 # === Docker ===
 if command -v docker &>/dev/null; then
     ok "Docker already installed"
@@ -86,6 +79,13 @@ if ! command -v pip3 &>/dev/null; then
     info "Installing python3-pip..."
     apt-get install -y python3-pip -q
     ok "python3-pip installed"
+fi
+
+# === dnsutils ===
+if ! command -v dig &>/dev/null; then
+    info "Installing dnsutils..."
+    apt-get install -y dnsutils -q
+    ok "dnsutils installed"
 fi
 
 # === Engine selection ===
@@ -115,6 +115,28 @@ echo ""
 read -p "Enter public domain or server IP: " TELEMT_HOST
 TELEMT_HOST=$(echo "$TELEMT_HOST" | tr -cd '[:alnum:].-')
 [[ -z "$TELEMT_HOST" ]] && err "Domain cannot be empty"
+
+# === DNS check ===
+if [[ ! "$TELEMT_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    info "Checking DNS for $TELEMT_HOST..."
+    SERVER_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null \
+             || curl -s --connect-timeout 5 https://ifconfig.me 2>/dev/null \
+             || hostname -I | awk '{print $1}')
+    DOMAIN_IP=$(dig +short "$TELEMT_HOST" A 2>/dev/null | grep -E '^[0-9.]+$' | tail -1)
+    if [[ -z "$DOMAIN_IP" ]]; then
+        warn "Domain $TELEMT_HOST has no A record yet."
+        warn "Point it to $SERVER_IP before clients can connect."
+        read -p "Continue anyway? [y/N]: " DNS_CONT
+        [[ ! "$DNS_CONT" =~ ^[Yy]$ ]] && err "Aborted. Update DNS and re-run the script."
+    elif [[ "$DOMAIN_IP" == "$SERVER_IP" ]]; then
+        ok "DNS OK: $TELEMT_HOST → $SERVER_IP"
+    else
+        warn "DNS mismatch: $TELEMT_HOST → $DOMAIN_IP, but this server is $SERVER_IP"
+        warn "Update DNS to point $TELEMT_HOST to $SERVER_IP."
+        read -p "Continue anyway? [y/N]: " DNS_CONT
+        [[ ! "$DNS_CONT" =~ ^[Yy]$ ]] && err "Aborted. Update DNS and re-run the script."
+    fi
+fi
 
 read -p "Enter proxy port [$DEFAULT_PORT]: " TELEMT_PORT
 TELEMT_PORT=$(echo "${TELEMT_PORT:-$DEFAULT_PORT}" | tr -cd '[:digit:]')
@@ -420,16 +442,6 @@ EOF
     ok ".telmgr-servers.json created"
 fi
 
-# === UFW ===
-if command -v ufw &>/dev/null; then
-    ufw allow "$TELEMT_PORT/tcp" comment "Telemt MTProxy"
-    ok "Port $TELEMT_PORT opened in UFW"
-    if $BOT_SLAVE; then
-        ufw allow "$TELMGR_API_PORT/tcp" comment "telmgr API"
-        ok "Port $TELMGR_API_PORT opened in UFW"
-    fi
-fi
-
 # === Start Docker ===
 cd "$TELEMT_DIR"
 docker compose up -d
@@ -450,6 +462,55 @@ if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
         echo "$BOT_LOGS"
         warn "Logs: docker compose logs telmgr-bot"
     fi
+fi
+
+# === UFW ===
+echo ""
+read -p "Set up UFW firewall (recommended)? [Y/n]: " SETUP_UFW
+SETUP_UFW=${SETUP_UFW:-Y}
+if [[ "$SETUP_UFW" =~ ^[Yy]$ ]]; then
+    if ! command -v ufw &>/dev/null; then
+        info "Installing UFW..."
+        apt-get install -y ufw -q
+        ok "UFW installed"
+    fi
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow ssh comment "SSH"
+    ufw allow "$TELEMT_PORT/tcp" comment "MTProxy"
+    if $BOT_SLAVE; then
+        ufw allow "$TELMGR_API_PORT/tcp" comment "telmgr API"
+    fi
+    ufw --force enable
+    ok "UFW enabled"
+    ufw status numbered
+fi
+
+# === fail2ban ===
+echo ""
+read -p "Install fail2ban — SSH brute-force protection (recommended)? [Y/n]: " SETUP_F2B
+SETUP_F2B=${SETUP_F2B:-Y}
+if [[ "$SETUP_F2B" =~ ^[Yy]$ ]]; then
+    if ! command -v fail2ban-client &>/dev/null; then
+        info "Installing fail2ban..."
+        apt-get install -y fail2ban -q
+        ok "fail2ban installed"
+    fi
+    cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled = true
+port    = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+EOF
+    systemctl enable fail2ban --quiet
+    systemctl restart fail2ban
+    ok "fail2ban configured (SSH: 5 failed attempts → 1h ban)"
 fi
 
 # === Summary ===
