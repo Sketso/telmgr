@@ -2,9 +2,9 @@
 
 **English** | [Русский](README.ru.md)
 
-CLI and Telegram bot for managing users of [Telemt](https://github.com/An0nX/telemt-docker) — a Rust-based MTProto proxy server.
+CLI and Telegram bot for managing users of an MTProto proxy server.
 
-Provides user management, backups, monitoring, and multi-server support through a single bot.
+Supports two proxy engines: **Telemt** (Rust, stable) and **mtproto.zig** (Zig, advanced DPI bypass). Provides user management, backups, monitoring, and multi-server support through a single bot.
 
 > 🤖 Built collaboratively with AI (Claude, Anthropic) for educational purposes.
 
@@ -23,11 +23,15 @@ The use of MTProto proxies may be restricted or prohibited by the laws of your c
 bash <(curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/scripts/install.sh)
 ```
 
-The script installs Docker (if missing), creates the config, starts the service, and installs `telmgr`. Optionally sets up a Telegram bot in Docker.
+The script handles everything step by step:
+- Installs Docker, Python, dependencies
+- Lets you choose proxy engine (Telemt or mtproto.zig)
+- Checks that the domain's DNS points to this server
+- Creates config, starts the proxy in Docker
+- Optionally sets up a Telegram bot
+- Sets up UFW firewall and fail2ban (SSH brute-force protection)
 
 Re-running the script on an already installed server will offer an **upgrade** (telmgr + bot.py, config unchanged). Alternatively, use `telmgr update`.
-
-> UFW is not installed automatically — if it's present, the port will be opened automatically. Otherwise, open it manually.
 
 ---
 
@@ -146,6 +150,7 @@ All settings are stored in `~/telemt/.env`:
 | `TELEMT_HOST` | ✅ | Public domain or IP of the server |
 | `TELEMT_PORT` | — | Public port (default: `2053`) |
 | `TELEMT_DIR` | — | Path to config directory (default: `~/telemt`) |
+| `PROXY_ENGINE` | — | `telemt` (default) or `mtproto_zig` |
 | `BOT_TOKEN` | — | Telegram bot token (master only) |
 | `SUPER_ADMIN_ID` | — | Superadmin Telegram ID (master only) |
 | `TELMGR_API_PORT` | — | HTTP API port (slave only, default: `8765`) |
@@ -156,7 +161,5 @@ All settings are stored in `~/telemt/.env`:
 ## Requirements
 
 - Ubuntu 22.04 / 24.04
-- Docker + Docker Compose
-- Python 3.10+
-- UFW (optional)
-- Root access (recommended)
+- Root access
+- Docker, Python, UFW, fail2ban — installed automatically by the script
