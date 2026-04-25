@@ -25,7 +25,7 @@ if command -v telmgr &>/dev/null; then
     DO_UPGRADE=${DO_UPGRADE:-Y}
     if [[ "$DO_UPGRADE" =~ ^[Yy]$ ]]; then
         info "Updating telmgr..."
-        curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/feat/mtproto-zig-engine/telmgr -o /usr/local/bin/telmgr
+        curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
         chmod +x /usr/local/bin/telmgr
         cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
         ok "telmgr updated"
@@ -39,7 +39,7 @@ if command -v telmgr &>/dev/null; then
         BOT_PY="$TELEMT_DIR_UPGRADE/bot.py"
         if [ -f "$BOT_PY" ]; then
             info "Updating bot.py..."
-            curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/feat/mtproto-zig-engine/bot/bot.py -o "$BOT_PY"
+            curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$BOT_PY"
             ok "bot.py updated"
             if docker ps --format '{{.Names}}' 2>/dev/null | grep -q telmgr-bot; then
                 docker compose -f "$TELEMT_DIR_UPGRADE/docker-compose.yml" restart telmgr-bot
@@ -299,7 +299,7 @@ fi
 
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     # Master: telemt + telmgr-bot
-    curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/feat/mtproto-zig-engine/bot/bot.py -o "$TELEMT_DIR/bot.py"
+    curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/bot/bot.py -o "$TELEMT_DIR/bot.py"
     ok "bot.py copied to $TELEMT_DIR"
 
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
@@ -368,7 +368,7 @@ fi
 ok "docker-compose.yml created"
 
 # === Install telmgr ===
-curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/feat/mtproto-zig-engine/telmgr -o /usr/local/bin/telmgr
+curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/master/telmgr -o /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
 pip3 install python-dotenv --break-system-packages -q
