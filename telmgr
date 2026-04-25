@@ -583,7 +583,7 @@ def cmd_bot_restart():
     subprocess.run(["docker", "compose", "restart", "telmgr-bot"], cwd=TELEMT_DIR, check=True)
     ok("telmgr-bot restarted" if not ru else "telmgr-bot перезапущен")
 
-GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
+GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/feat/mtproto-zig-engine"
 TELMGR_BIN = "/usr/local/bin/telmgr"
 
 def cmd_uninstall():
