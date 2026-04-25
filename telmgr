@@ -807,6 +807,7 @@ def _cmd_bot_setup_slave():
     with open(compose_path, "r") as f:
         compose_content = f.read()
     if "telmgr-api" not in compose_content:
+        toml_filename = "mtproto-zig.toml" if PROXY_ENGINE == "mtproto_zig" else "telemt.toml"
         api_service = (
             "\n"
             "  telmgr-api:\n"
@@ -817,7 +818,7 @@ def _cmd_bot_setup_slave():
             "    volumes:\n"
             "      - ./.env:/app/.env:ro\n"
             "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
-            "      - ./telemt.toml:/app/data/telemt.toml\n"
+            f"      - ./{toml_filename}:/app/data/{toml_filename}\n"
             "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
             "    environment:\n"
             "      - TELEMT_DIR=/app/data\n"
