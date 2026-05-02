@@ -667,10 +667,8 @@ def cmd_update():
                 info("Added docker.sock to telmgr-bot" if not ru else "Добавлен docker.sock для telmgr-bot")
 
         info("Restarting telmgr-bot..." if not ru else "Перезапускаем telmgr-bot...")
-        subprocess.run(
-            ["docker", "compose", "up", "-d", "--force-recreate", "telmgr-bot"],
-            cwd=TELEMT_DIR, check=False
-        )
+        subprocess.run(["docker", "compose", "up", "-d", "telmgr-bot"], cwd=TELEMT_DIR, check=False)
+        subprocess.run(["docker", "compose", "restart", "telmgr-bot"], cwd=TELEMT_DIR, check=False)
         ok("telmgr-bot restarted" if not ru else "telmgr-bot перезапущен")
     else:
         info("bot.py not found — skipping" if not ru else "bot.py не найден — пропускаем")
