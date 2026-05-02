@@ -668,7 +668,7 @@ def cmd_update():
 
         info("Restarting telmgr-bot..." if not ru else "Перезапускаем telmgr-bot...")
         subprocess.run(
-            ["docker", "compose", "up", "-d", "telmgr-bot"],
+            ["docker", "compose", "up", "-d", "--force-recreate", "telmgr-bot"],
             cwd=TELEMT_DIR, check=False
         )
         ok("telmgr-bot restarted" if not ru else "telmgr-bot перезапущен")
