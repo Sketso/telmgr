@@ -89,7 +89,6 @@ class LocalServerClient:
             telmgr.write_toml("\n".join(result_lines))
             expires = None
             if days > 0:
-                from datetime import datetime, timedelta
                 expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
             meta = telmgr.load_meta()
             meta[name] = {
