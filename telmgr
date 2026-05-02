@@ -40,6 +40,7 @@ PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
 API_PORT = int(os.environ.get("TELMGR_API_PORT", "8765"))
 API_KEY = os.environ.get("TELMGR_API_KEY", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+VERSION = "1.0.0"
 
 # === Цвета ===
 RED = "\033[31m"
@@ -636,15 +637,25 @@ def cmd_update():
         err("Run as root" if not _is_russian() else "Запусти от root")
 
     ru = _is_russian()
-    info("Updating telmgr..." if not ru else "Обновляем telmgr...")
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        with urllib.request.urlopen(f"{GITHUB_RAW}/telmgr") as resp:
-            tmp.write(resp.read())
-        tmp_path = tmp.name
-    os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    shutil.move(tmp_path, TELMGR_BIN)
-    shutil.copy(TELMGR_BIN, TELMGR_BIN + ".py")
-    ok("telmgr updated" if not ru else "telmgr обновлён")
+    prev_version = os.environ.get("_TELMGR_PREV_VERSION")
+
+    if not prev_version:
+        info("Updating telmgr..." if not ru else "Обновляем telmgr...")
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            with urllib.request.urlopen(f"{GITHUB_RAW}/telmgr") as resp:
+                tmp.write(resp.read())
+            tmp_path = tmp.name
+        os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        shutil.move(tmp_path, TELMGR_BIN)
+        shutil.copy(TELMGR_BIN, TELMGR_BIN + ".py")
+        env = os.environ.copy()
+        env["_TELMGR_PREV_VERSION"] = VERSION
+        os.execve(TELMGR_BIN, [TELMGR_BIN, "update"], env)
+
+    if prev_version != VERSION:
+        ok(f"telmgr обновлён: v{prev_version} → v{VERSION}" if ru else f"telmgr updated: v{prev_version} → v{VERSION}")
+    else:
+        ok("telmgr уже актуален" if ru else "telmgr up to date")
 
     bot_path = os.path.join(TELEMT_DIR, "bot.py")
     if os.path.exists(bot_path):
@@ -1290,7 +1301,7 @@ def usage():
         mode_label = ""
 
     if ru:
-        title    = "telmgr — менеджер пользователей Telemt MTProxy"
+        title    = f"telmgr v{VERSION} — менеджер пользователей Telemt MTProxy"
         usage_hd = "Использование:"
         u = {
             "user_list":   _fmt("telmgr user list",                 "Список пользователей"),
@@ -1329,7 +1340,7 @@ def usage():
             "uninstall":   _fmt("telmgr uninstall",                 "Полностью удалить telmgr"),
         }
     else:
-        title    = "telmgr — user manager for Telemt MTProxy"
+        title    = f"telmgr v{VERSION} — user manager for Telemt MTProxy"
         usage_hd = "Usage:"
         u = {
             "user_list":   _fmt("telmgr user list",                 "List users"),
@@ -1406,6 +1417,10 @@ def main():
         sys.exit(0)
 
     section = args[0]
+
+    if section in ("--version", "-v", "version"):
+        print(f"telmgr v{VERSION}")
+        sys.exit(0)
 
     # Команды без подкоманд
     if section == "status":
