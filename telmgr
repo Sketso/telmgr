@@ -595,10 +595,18 @@ TELMGR_BIN = "/usr/local/bin/telmgr"
 
 def reload_proxy():
     try:
-        subprocess.run(
-            ["docker", "kill", "--signal=SIGHUP", PROXY_CONTAINER],
-            capture_output=True, timeout=5
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect("/var/run/docker.sock")
+        req = (
+            f"POST /containers/{PROXY_CONTAINER}/kill?signal=SIGHUP HTTP/1.1\r\n"
+            f"Host: localhost\r\n"
+            f"Content-Length: 0\r\n\r\n"
         )
+        sock.sendall(req.encode())
+        sock.recv(4096)
+        sock.close()
     except Exception:
         pass
 
