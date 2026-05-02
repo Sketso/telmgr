@@ -167,6 +167,7 @@ def cmd_add(name, days=0):
     if expires:
         add_cron(name, expires)
 
+    reload_proxy()
     ok(f"Пользователь '{name}' добавлен")
     if expires:
         info(f"📅 Истекает: {expires}")
@@ -189,6 +190,7 @@ def cmd_delete(name):
         save_meta(meta)
 
     remove_cron(name)
+    reload_proxy()
     ok(f"Пользователь '{name}' удалён")
 
 def cmd_disable(name):
@@ -214,6 +216,7 @@ def cmd_disable(name):
         meta[name]["disabled"] = True
         save_meta(meta)
 
+    reload_proxy()
     ok(f"Пользователь '{name}' отключён")
 
 def cmd_enable(name):
@@ -239,6 +242,7 @@ def cmd_enable(name):
         meta[name]["disabled"] = False
         save_meta(meta)
 
+    reload_proxy()
     ok(f"Пользователь '{name}' включён")
 
 def cmd_limit(name, days):
@@ -270,6 +274,7 @@ def cmd_limit(name, days):
             )
             write_toml(new_content)
             info(f"Пользователь '{name}' автоматически включён")
+        reload_proxy()
         ok(f"Лимит для '{name}' снят — пользователь теперь бессрочный")
         return
     # Auto-enable если был отключён
@@ -287,6 +292,7 @@ def cmd_limit(name, days):
     meta[name]["expires"] = expires
     save_meta(meta)
     add_cron(name, expires)
+    reload_proxy()
     ok(f"Лимит установлен: '{name}' будет отключён {expires}")
 
 def cmd_list():
@@ -583,8 +589,18 @@ def cmd_bot_restart():
     subprocess.run(["docker", "compose", "restart", "telmgr-bot"], cwd=TELEMT_DIR, check=True)
     ok("telmgr-bot restarted" if not ru else "telmgr-bot перезапущен")
 
-GITHUB_RAW = "https://raw.githubusercontent.com/Sketso/telmgr/master"
+TELMGR_BRANCH = os.environ.get("TELMGR_BRANCH", "master")
+GITHUB_RAW = f"https://raw.githubusercontent.com/Sketso/telmgr/{TELMGR_BRANCH}"
 TELMGR_BIN = "/usr/local/bin/telmgr"
+
+def reload_proxy():
+    try:
+        subprocess.run(
+            ["docker", "kill", "--signal=SIGHUP", PROXY_CONTAINER],
+            capture_output=True, timeout=5
+        )
+    except Exception:
+        pass
 
 def cmd_uninstall():
     import urllib.request, tempfile, stat
@@ -628,9 +644,23 @@ def cmd_update():
         with open(bot_path, "wb") as f:
             f.write(content)
         ok("bot.py updated" if not ru else "bot.py обновлён")
+
+        compose_path = os.path.join(TELEMT_DIR, "docker-compose.yml")
+        if os.path.exists(compose_path):
+            with open(compose_path) as f:
+                compose = f.read()
+            if "telmgr-bot" in compose and "/var/run/docker.sock" not in compose:
+                compose = compose.replace(
+                    "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro",
+                    "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n      - /var/run/docker.sock:/var/run/docker.sock"
+                )
+                with open(compose_path, "w") as f:
+                    f.write(compose)
+                info("Added docker.sock to telmgr-bot" if not ru else "Добавлен docker.sock для telmgr-bot")
+
         info("Restarting telmgr-bot..." if not ru else "Перезапускаем telmgr-bot...")
         subprocess.run(
-            ["docker", "compose", "restart", "telmgr-bot"],
+            ["docker", "compose", "up", "-d", "telmgr-bot"],
             cwd=TELEMT_DIR, check=False
         )
         ok("telmgr-bot restarted" if not ru else "telmgr-bot перезапущен")

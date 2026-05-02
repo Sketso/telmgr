@@ -103,6 +103,7 @@ class LocalServerClient:
             telmgr.save_meta(meta)
             if expires:
                 telmgr.add_cron(name, expires)
+            telmgr.reload_proxy()
             return {"link": telmgr.build_link(secret), "expires": expires}
         return await loop.run_in_executor(None, _sync)
 
