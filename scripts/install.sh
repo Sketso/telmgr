@@ -93,8 +93,9 @@ fi
 # === Engine selection ===
 echo ""
 echo "Select proxy engine:"
-echo "  [1] telemt-docker (default) — stable, low memory (~12 MB)"
+echo "  [1] telemt-docker (default, recommended) — stable, low memory (~12 MB), hot-reload on user changes"
 echo "  [2] mtproto.zig — advanced DPI bypass, recommended for Apple devices (~1 MB)"
+echo "      Note: adding/removing users restarts the container (~1-2 sec downtime each time)"
 read -p "Enter choice [1]: " ENGINE_CHOICE
 ENGINE_CHOICE=${ENGINE_CHOICE:-1}
 

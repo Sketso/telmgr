@@ -593,22 +593,24 @@ TELMGR_BRANCH = os.environ.get("TELMGR_BRANCH", "master")
 GITHUB_RAW = f"https://raw.githubusercontent.com/Sketso/telmgr/{TELMGR_BRANCH}"
 TELMGR_BIN = "/usr/local/bin/telmgr"
 
-def reload_proxy():
+def _docker_api(method, path):
     try:
         import socket as _socket
         sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         sock.settimeout(5)
         sock.connect("/var/run/docker.sock")
-        req = (
-            f"POST /containers/{PROXY_CONTAINER}/kill?signal=SIGHUP HTTP/1.1\r\n"
-            f"Host: localhost\r\n"
-            f"Content-Length: 0\r\n\r\n"
-        )
+        req = f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
         sock.sendall(req.encode())
         sock.recv(4096)
         sock.close()
     except Exception:
         pass
+
+def reload_proxy():
+    if PROXY_CONTAINER == "telemt":
+        _docker_api("POST", f"/containers/{PROXY_CONTAINER}/kill?signal=SIGHUP")
+    else:
+        _docker_api("POST", f"/containers/{PROXY_CONTAINER}/restart")
 
 def cmd_uninstall():
     import urllib.request, tempfile, stat
