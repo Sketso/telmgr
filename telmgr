@@ -674,6 +674,16 @@ def cmd_update():
     else:
         ok("telmgr уже актуален" if ru else "telmgr up to date")
 
+    # Миграция: убрать остаточную cron-строку старого авто-бэкапа (cron больше не используется)
+    try:
+        cron_res = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        if cron_res.returncode == 0 and "# telmgr-autobackup" in cron_res.stdout:
+            new_cron = "\n".join(l for l in cron_res.stdout.splitlines() if "# telmgr-autobackup" not in l) + "\n"
+            subprocess.run(["crontab", "-"], input=new_cron, text=True, check=False)
+            info("Удалена старая cron-строка telmgr-autobackup (теперь шедулит бот)" if ru else "Removed old telmgr-autobackup cron line (bot handles scheduling now)")
+    except Exception:
+        pass
+
     bot_path = os.path.join(TELEMT_DIR, "bot.py")
     if os.path.exists(bot_path):
         info("Updating bot.py..." if not ru else "Обновляем bot.py...")
@@ -957,10 +967,18 @@ def cmd_backup():
         os.path.join(TELEMT_DIR, ".telmgr-admins.json"),
         os.path.join(TELEMT_DIR, ".env"),
     ]
+    # В bot/api контейнерах .env смонтирован как /app/.env, а TELEMT_DIR=/app/data
+    if not os.path.exists(os.path.join(TELEMT_DIR, ".env")) and os.path.exists("/app/.env"):
+        files.append("/app/.env")
+    added = set()
     with tarfile.open(backup_file, "w:gz") as tar:
         for f in files:
             if os.path.exists(f):
-                tar.add(f, arcname=os.path.basename(f))
+                arc = os.path.basename(f)
+                if arc in added:
+                    continue
+                tar.add(f, arcname=arc)
+                added.add(arc)
     ok(f"Бэкап создан: {backup_file}")
     if PUBLIC_HOST:
         warn(f"При восстановлении на новом сервере домен и порт должны быть идентичными: {PUBLIC_HOST}:{PUBLIC_PORT}")
