@@ -1007,7 +1007,19 @@ BACKUP_JOB_ID = "telmgr_backup_auto"
 
 def _safe_filename(name: str) -> str:
     safe = re.sub(r'[^a-zA-Z0-9_-]+', '-', name).strip('-').lower()
-    return safe or "server"
+    return safe
+
+def _server_slug(info_data: dict, sid: str) -> str:
+    """Латинский slug для имени файла. Приоритет: имя → первая часть host → sid."""
+    name_slug = _safe_filename(info_data.get("name", ""))
+    if name_slug:
+        return name_slug
+    host = info_data.get("host", "")
+    if host:
+        host_slug = _safe_filename(host.split(".")[0])
+        if host_slug:
+            return host_slug
+    return _safe_filename(sid) or "server"
 
 async def run_backup_all():
     from aiogram.types import BufferedInputFile
@@ -1019,7 +1031,7 @@ async def run_backup_all():
         try:
             client = LocalServerClient(info_data) if info_data.get("url") == "local" else RemoteServerClient(info_data)
             data, _orig_name = await client.get_backup()
-            filename = f"telmgr-{_safe_filename(srv_name)}-{date}.tar.gz"
+            filename = f"telmgr-{_server_slug(info_data, sid)}-{date}.tar.gz"
             await bot.send_document(
                 SUPER_ADMIN_ID,
                 BufferedInputFile(data, filename=filename),
