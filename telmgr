@@ -35,12 +35,13 @@ else:
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
 SERVERS_PATH = os.path.join(TELEMT_DIR, ".telmgr-servers.json")
+SCHEDULE_PATH = os.path.join(TELEMT_DIR, ".telmgr-backup-schedule.json")
 PUBLIC_HOST = os.environ.get("TELEMT_HOST")
 PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
 API_PORT = int(os.environ.get("TELMGR_API_PORT", "8765"))
 API_KEY = os.environ.get("TELMGR_API_KEY", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # === Цвета ===
 RED = "\033[31m"
@@ -613,6 +614,22 @@ def reload_proxy():
     else:
         _docker_api("POST", f"/containers/{PROXY_CONTAINER}/restart")
 
+def _load_backup_schedule():
+    if not os.path.exists(SCHEDULE_PATH):
+        return {"enabled": False, "hour": 3}
+    try:
+        with open(SCHEDULE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"enabled": False, "hour": 3}
+
+def _save_backup_schedule(data):
+    with open(SCHEDULE_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _signal_bot_reload():
+    _docker_api("POST", "/containers/telmgr-bot/kill?signal=SIGHUP")
+
 def cmd_uninstall():
     import urllib.request, tempfile, stat
     if os.geteuid() != 0:
@@ -902,43 +919,33 @@ def _cmd_bot_setup_slave():
     print()
     warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
 
-CRON_TAG = "# telmgr-autobackup"
-
 def cmd_backup_auto_enable(hour=3):
-    import subprocess as sp
-    tag = CRON_TAG
-    cron_line = f"0 {hour} * * * /usr/local/bin/telmgr backup  {tag}"
-    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
-    existing = result.stdout if result.returncode == 0 else ""
-    if tag in existing:
-        ok(f"Авто-бэкап уже включён (строка с '{tag}' уже есть)")
-        return
-    new_cron = existing.rstrip("\n") + "\n" + cron_line + "\n"
-    sp.run(["crontab", "-"], input=new_cron, text=True, check=True)
+    try:
+        hour = int(hour)
+    except (ValueError, TypeError):
+        err("Час должен быть числом 0–23")
+    if not (0 <= hour <= 23):
+        err("Час должен быть 0–23")
+    if not BOT_TOKEN:
+        err("Авто-бэкап настраивается только на master с настроенным ботом. Используй /backup_auto в боте")
+    _save_backup_schedule({"enabled": True, "hour": hour})
+    _signal_bot_reload()
     ok(f"Авто-бэкап включён: ежедневно в {hour:02d}:00")
 
 def cmd_backup_auto_disable():
-    import subprocess as sp
-    tag = CRON_TAG
-    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
-    if result.returncode != 0 or tag not in result.stdout:
-        warn("Авто-бэкап не был включён")
-        return
-    new_cron = "\n".join(
-        line for line in result.stdout.splitlines() if tag not in line
-    ) + "\n"
-    sp.run(["crontab", "-"], input=new_cron, text=True, check=True)
+    if not BOT_TOKEN:
+        err("Авто-бэкап настраивается только на master с настроенным ботом")
+    s = _load_backup_schedule()
+    _save_backup_schedule({"enabled": False, "hour": s.get("hour", 3)})
+    _signal_bot_reload()
     ok("Авто-бэкап отключён")
 
 def cmd_backup_auto_status():
-    import subprocess as sp
-    result = sp.run(["crontab", "-l"], capture_output=True, text=True)
-    if result.returncode != 0 or CRON_TAG not in result.stdout:
+    s = _load_backup_schedule()
+    if s.get("enabled"):
+        info(f"Авто-бэкап: включён, ежедневно в {s.get('hour', 3):02d}:00")
+    else:
         info("Авто-бэкап: отключён")
-        return
-    for line in result.stdout.splitlines():
-        if CRON_TAG in line:
-            info(f"Авто-бэкап: включён  →  {line.split(CRON_TAG)[0].strip()}")
 
 def cmd_backup():
     import tarfile
@@ -960,6 +967,7 @@ def cmd_backup():
     else:
         warn("При восстановлении на новом сервере домен и порт должны совпадать с оригинальными!")
     warn("Иначе ссылки пользователей перестанут работать!")
+    return backup_file
 
 def cmd_restore(backup_file):
     import tarfile
@@ -1153,6 +1161,8 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
             body = self._read_body()
             _, e = self._call_cmd(cmd_limit, parts[1], body.get("days", 0))
             self._send_json({"error": e} if e else {"ok": True})
+        elif parts == ["backup"]:
+            self._handle_backup()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -1261,6 +1271,25 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
         if expires:
             add_cron(name, expires)
         self._send_json({"link": build_link(secret), "expires": expires})
+
+    def _handle_backup(self):
+        import base64, io, contextlib
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                backup_path = cmd_backup()
+            if not backup_path or not os.path.exists(backup_path):
+                self._send_json({"error": "Бэкап не создан"}, 500)
+                return
+            with open(backup_path, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            self._send_json({
+                "filename": os.path.basename(backup_path),
+                "data": data,
+                "host": PUBLIC_HOST or "",
+            })
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
 
     def _handle_get_link(self, name):
         content = read_toml()

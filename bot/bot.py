@@ -133,6 +133,20 @@ class LocalServerClient:
             return telmgr.build_link(users[name]["secret"])
         return await loop.run_in_executor(None, _sync)
 
+    async def get_backup(self) -> tuple:
+        """Создать бэкап локально и вернуть (bytes, filename)."""
+        import io, contextlib
+        loop = asyncio.get_event_loop()
+        def _sync():
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                path = telmgr.cmd_backup()
+            if not path or not os.path.exists(path):
+                raise ValueError("Бэкап не создан")
+            with open(path, "rb") as f:
+                return f.read(), os.path.basename(path)
+        return await loop.run_in_executor(None, _sync)
+
 
 class RemoteServerClient:
     def __init__(self, info: dict):
@@ -193,6 +207,11 @@ class RemoteServerClient:
     async def get_link(self, name: str) -> str:
         data = await self._req("GET", f"/users/{name}/link")
         return data["link"]
+
+    async def get_backup(self) -> tuple:
+        import base64
+        data = await self._req("POST", "/backup")
+        return base64.b64decode(data["data"]), data["filename"]
 
 
 # === Server context ===
@@ -984,11 +1003,109 @@ async def add_server_key(message: Message, state: FSMContext):
     await state.clear()
 
 
+BACKUP_JOB_ID = "telmgr_backup_auto"
+
+def _safe_filename(name: str) -> str:
+    safe = re.sub(r'[^a-zA-Z0-9_-]+', '-', name).strip('-').lower()
+    return safe or "server"
+
+async def run_backup_all():
+    from aiogram.types import BufferedInputFile
+    cfg = load_servers_config()
+    date = datetime.now().strftime("%Y-%m-%d")
+    when = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for sid, info_data in cfg.get("servers", {}).items():
+        srv_name = info_data.get("name") or sid
+        try:
+            client = LocalServerClient(info_data) if info_data.get("url") == "local" else RemoteServerClient(info_data)
+            data, _orig_name = await client.get_backup()
+            filename = f"telmgr-{_safe_filename(srv_name)}-{date}.tar.gz"
+            await bot.send_document(
+                SUPER_ADMIN_ID,
+                BufferedInputFile(data, filename=filename),
+                caption=f"📦 {srv_name} — {when}",
+            )
+        except Exception as e:
+            try:
+                await bot.send_message(SUPER_ADMIN_ID, f"❌ Бэкап {srv_name} не удался: {e}")
+            except Exception:
+                pass
+
+def apply_backup_schedule():
+    from apscheduler.triggers.cron import CronTrigger
+    s = telmgr._load_backup_schedule()
+    try:
+        scheduler.remove_job(BACKUP_JOB_ID)
+    except Exception:
+        pass
+    if s.get("enabled"):
+        scheduler.add_job(
+            run_backup_all,
+            CronTrigger(hour=int(s.get("hour", 3)), minute=0),
+            id=BACKUP_JOB_ID,
+            replace_existing=True,
+        )
+
+@dp.message(Command("backup"))
+async def backup_cmd_handler(message: Message):
+    if not is_super_admin(message.from_user.id):
+        return
+    await message.answer("📦 Собираю бэкапы со всех серверов...")
+    await run_backup_all()
+
+@dp.message(Command("backup_auto"))
+async def backup_auto_cmd_handler(message: Message):
+    if not is_super_admin(message.from_user.id):
+        return
+    args = (message.text or "").split()[1:]
+    s = telmgr._load_backup_schedule()
+    if not args:
+        if s.get("enabled"):
+            await message.answer(
+                f"🔄 Авто-бэкап: <b>включён</b>, ежедневно в {s.get('hour', 3):02d}:00\n\n"
+                "<code>/backup_auto off</code> — отключить\n"
+                "<code>/backup_auto on [час]</code> — изменить",
+                parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                "⏸ Авто-бэкап: <b>отключён</b>\n\n"
+                "<code>/backup_auto on [час]</code> — включить (по умолчанию 3)",
+                parse_mode="HTML",
+            )
+        return
+    if args[0] == "off":
+        telmgr._save_backup_schedule({"enabled": False, "hour": s.get("hour", 3)})
+        apply_backup_schedule()
+        await message.answer("⏸ Авто-бэкап отключён")
+    elif args[0] == "on":
+        try:
+            hour = int(args[1]) if len(args) > 1 else 3
+        except ValueError:
+            await message.answer("❌ Час должен быть числом 0–23")
+            return
+        if not (0 <= hour <= 23):
+            await message.answer("❌ Час должен быть 0–23")
+            return
+        telmgr._save_backup_schedule({"enabled": True, "hour": hour})
+        apply_backup_schedule()
+        await message.answer(f"🔄 Авто-бэкап включён: ежедневно в {hour:02d}:00")
+    else:
+        await message.answer("Использование: <code>/backup_auto [on [час] | off]</code>", parse_mode="HTML")
+
+
 async def main():
+    import signal as _signal
     overdue = load_scheduled_jobs()
     scheduler.start()
     for name, admin_id in overdue:
         asyncio.create_task(disable_user_job(name, admin_id))
+    apply_backup_schedule()
+    try:
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(_signal.SIGHUP, apply_backup_schedule)
+    except (NotImplementedError, AttributeError):
+        pass  # Windows / signals unsupported
     print("Бот запущен...")
     await dp.start_polling(bot)
 
