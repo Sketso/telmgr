@@ -88,14 +88,14 @@ telmgr bot logs [lines]            # Telegram bot logs (default: 50)
 ### Proxy & maintenance
 ```bash
 telmgr status                      # proxy, bot, and user status
-telmgr logs [lines]                # telemt container logs (default: 50)
-telmgr restart                     # restart proxy (telemt)
+telmgr logs [lines]                # proxy container logs (default: 50)
+telmgr restart                     # restart proxy
 telmgr update                      # update telmgr and bot.py from GitHub
-telmgr coreupdate                  # update telemt Docker image
-telmgr backup                      # create backup
-telmgr backup auto enable [hour]   # enable auto-backup (default: 3:00)
-telmgr backup auto disable         # disable auto-backup
-telmgr backup auto                 # auto-backup status
+telmgr coreupdate                  # update proxy Docker image
+telmgr backup                      # create local backup (tar.gz)
+telmgr backup auto enable <interval>  # enable auto-backup (e.g. 3h, 7d, 2w, 1m)
+telmgr backup auto disable            # disable auto-backup
+telmgr backup auto                    # show auto-backup status
 telmgr restore <file>              # restore from backup
 telmgr uninstall                   # fully remove telmgr
 ```
@@ -124,6 +124,20 @@ telmgr bot setup
 - **Admin** — manages only their own users; attempting to modify another admin's user is blocked
 - User names are globally unique per server
 
+### Bot commands
+
+| Command | Description |
+|---|---|
+| `/start` | Main menu |
+| `/backup` | Collect and send backups from all servers to Telegram |
+| `/backup_auto` | Configure automatic backup schedule |
+
+`/backup_auto` syntax: `/backup_auto on <interval>` or `/backup_auto off`
+
+Interval format: `Nh` (hours), `Nd` (days), `Nw` (weeks), `Nm` (months). Examples: `3h`, `7d`, `2w`, `1m`.
+
+Backups are sent to the superadmin as `.tar.gz` files containing `telemt.toml`, `.env`, and metadata. Restore with `telmgr restore <file>` after copying the file to the server.
+
 ### Multiple servers
 
 The master bot can manage multiple servers. On each additional server:
@@ -137,7 +151,7 @@ On the master, register the new server:
 telmgr server add "Name" http://<IP>:8765 <API_KEY>
 ```
 
-Once added, a server selector button appears in the bot. The admin list is shared across all servers.
+Once added, a server selector button appears in the bot. The admin list is shared across all servers. When `/backup` is triggered, the master bot collects backups from all registered servers automatically.
 
 ---
 
