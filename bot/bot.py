@@ -1045,18 +1045,27 @@ async def run_backup_all():
 
 def apply_backup_schedule():
     from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
     s = telmgr._load_backup_schedule()
     try:
         scheduler.remove_job(BACKUP_JOB_ID)
     except Exception:
         pass
-    if s.get("enabled"):
-        scheduler.add_job(
-            run_backup_all,
-            CronTrigger(hour=int(s.get("hour", 3)), minute=0),
-            id=BACKUP_JOB_ID,
-            replace_existing=True,
-        )
+    if not s.get("enabled"):
+        return
+    parsed = telmgr._parse_interval(s.get("interval", "1d"))
+    if not parsed:
+        return
+    n, unit = parsed
+    if unit == 'h':
+        trigger = CronTrigger(hour=f'0/{n}', minute=0)
+    elif unit == 'd':
+        trigger = CronTrigger(day=f'1/{n}', hour=3, minute=0)
+    elif unit == 'w':
+        trigger = IntervalTrigger(weeks=n)
+    else:  # 'm'
+        trigger = CronTrigger(month=f'1/{n}', day=1, hour=3, minute=0)
+    scheduler.add_job(run_backup_all, trigger, id=BACKUP_JOB_ID, replace_existing=True)
 
 @dp.message(Command("backup"))
 async def backup_cmd_handler(message: Message):
@@ -1065,49 +1074,57 @@ async def backup_cmd_handler(message: Message):
     await message.answer("📦 Собираю бэкапы со всех серверов...")
     await run_backup_all()
 
+_BACKUP_AUTO_HELP = (
+    "Формат интервала: <code>N{h|d|w|m}</code>\n"
+    "  <b>h</b> — часы (1–23), напр. <code>3h</code>\n"
+    "  <b>d</b> — дни (1–31), напр. <code>7d</code>\n"
+    "  <b>w</b> — недели (1–52), напр. <code>2w</code>\n"
+    "  <b>m</b> — месяцы (1–12), напр. <code>1m</code>"
+)
+
 @dp.message(Command("backup_auto"))
 async def backup_auto_cmd_handler(message: Message):
     if not is_super_admin(message.from_user.id):
         return
     args = (message.text or "").split()[1:]
     s = telmgr._load_backup_schedule()
+    interval = s.get("interval", "1d")
     if not args:
         if s.get("enabled"):
             await message.answer(
-                f"🔄 Авто-бэкап: <b>включён</b>, ежедневно в {s.get('hour', 3):02d}:00\n\n"
+                f"🔄 Авто-бэкап: <b>включён</b>, {telmgr._format_interval(interval)}\n\n"
                 "<code>/backup_auto off</code> — отключить\n"
-                "<code>/backup_auto on [час]</code> — изменить",
+                "<code>/backup_auto on N{h|d|w|m}</code> — изменить\n\n"
+                + _BACKUP_AUTO_HELP,
                 parse_mode="HTML",
             )
         else:
             await message.answer(
                 "⏸ Авто-бэкап: <b>отключён</b>\n\n"
-                "<code>/backup_auto on [час]</code> — включить (по умолчанию 3)",
+                "<code>/backup_auto on N{h|d|w|m}</code> — включить (по умолчанию 1d)\n\n"
+                + _BACKUP_AUTO_HELP,
                 parse_mode="HTML",
             )
         return
     if args[0] == "off":
-        telmgr._save_backup_schedule({"enabled": False, "hour": s.get("hour", 3)})
+        telmgr._save_backup_schedule({"enabled": False, "interval": interval})
         apply_backup_schedule()
         await message.answer("⏸ Авто-бэкап отключён")
     elif args[0] == "on":
-        try:
-            hour = int(args[1]) if len(args) > 1 else 3
-        except ValueError:
-            await message.answer("❌ Час должен быть числом 0–23")
+        new_interval = args[1] if len(args) > 1 else "1d"
+        if not telmgr._parse_interval(new_interval):
+            await message.answer(f"❌ Неверный интервал: <code>{new_interval}</code>\n\n" + _BACKUP_AUTO_HELP, parse_mode="HTML")
             return
-        if not (0 <= hour <= 23):
-            await message.answer("❌ Час должен быть 0–23")
-            return
-        telmgr._save_backup_schedule({"enabled": True, "hour": hour})
+        telmgr._save_backup_schedule({"enabled": True, "interval": new_interval})
         apply_backup_schedule()
-        await message.answer(f"🔄 Авто-бэкап включён: ежедневно в {hour:02d}:00")
+        await message.answer(f"🔄 Авто-бэкап включён: {telmgr._format_interval(new_interval)}")
     else:
-        await message.answer("Использование: <code>/backup_auto [on [час] | off]</code>", parse_mode="HTML")
+        await message.answer("Использование: <code>/backup_auto [on N{h|d|w|m} | off]</code>", parse_mode="HTML")
 
 
 async def main():
     import signal as _signal
+    from aiogram.types import BotCommand
     overdue = load_scheduled_jobs()
     scheduler.start()
     for name, admin_id in overdue:
@@ -1117,7 +1134,15 @@ async def main():
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(_signal.SIGHUP, apply_backup_schedule)
     except (NotImplementedError, AttributeError):
-        pass  # Windows / signals unsupported
+        pass
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Запустить бота"),
+            BotCommand(command="backup", description="Создать бэкап всех серверов сейчас"),
+            BotCommand(command="backup_auto", description="Расписание авто-бэкапов"),
+        ])
+    except Exception as e:
+        print(f"set_my_commands failed: {e}")
     print("Бот запущен...")
     await dp.start_polling(bot)
 

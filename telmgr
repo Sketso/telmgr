@@ -614,14 +614,62 @@ def reload_proxy():
     else:
         _docker_api("POST", f"/containers/{PROXY_CONTAINER}/restart")
 
+_INTERVAL_LIMITS = {'h': (1, 23), 'd': (1, 31), 'w': (1, 52), 'm': (1, 12)}
+
+def _parse_interval(s):
+    """'3h' / '7d' / '2w' / '5m' → (n, unit) или None."""
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    m = re.match(r'^(\d+)([hdwm])$', s)
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2)
+    lo, hi = _INTERVAL_LIMITS[unit]
+    if not (lo <= n <= hi):
+        return None
+    return n, unit
+
+def _format_interval(s):
+    """Человекочитаемое описание интервала."""
+    parsed = _parse_interval(s)
+    if not parsed:
+        return s or "?"
+    n, unit = parsed
+    forms = {
+        'h': ('час', 'часа', 'часов'),
+        'd': ('день', 'дня', 'дней'),
+        'w': ('неделя', 'недели', 'недель'),
+        'm': ('месяц', 'месяца', 'месяцев'),
+    }
+    one, few, many = forms[unit]
+    n100, n10 = n % 100, n % 10
+    if 11 <= n100 <= 14:
+        word = many
+    elif n10 == 1:
+        word = one
+    elif 2 <= n10 <= 4:
+        word = few
+    else:
+        word = many
+    if n == 1:
+        special = {'h': 'каждый час', 'd': 'ежедневно', 'w': 'еженедельно', 'm': 'ежемесячно'}
+        return special[unit]
+    return f"каждые {n} {word}"
+
 def _load_backup_schedule():
+    default = {"enabled": False, "interval": "1d"}
     if not os.path.exists(SCHEDULE_PATH):
-        return {"enabled": False, "hour": 3}
+        return default
     try:
         with open(SCHEDULE_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
+        # backwards compat: {"enabled": ..., "hour": N} → "1d"
+        if "interval" not in data:
+            data["interval"] = "1d"
+        return data
     except Exception:
-        return {"enabled": False, "hour": 3}
+        return default
 
 def _save_backup_schedule(data):
     with open(SCHEDULE_PATH, "w") as f:
@@ -929,31 +977,27 @@ def _cmd_bot_setup_slave():
     print()
     warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
 
-def cmd_backup_auto_enable(hour=3):
-    try:
-        hour = int(hour)
-    except (ValueError, TypeError):
-        err("Час должен быть числом 0–23")
-    if not (0 <= hour <= 23):
-        err("Час должен быть 0–23")
+def cmd_backup_auto_enable(interval="1d"):
+    if not _parse_interval(interval):
+        err("Неверный интервал. Формат: <N><h|d|w|m>, например 3h, 7d, 2w, 5m")
     if not BOT_TOKEN:
         err("Авто-бэкап настраивается только на master с настроенным ботом. Используй /backup_auto в боте")
-    _save_backup_schedule({"enabled": True, "hour": hour})
+    _save_backup_schedule({"enabled": True, "interval": interval})
     _signal_bot_reload()
-    ok(f"Авто-бэкап включён: ежедневно в {hour:02d}:00")
+    ok(f"Авто-бэкап включён: {_format_interval(interval)}")
 
 def cmd_backup_auto_disable():
     if not BOT_TOKEN:
         err("Авто-бэкап настраивается только на master с настроенным ботом")
     s = _load_backup_schedule()
-    _save_backup_schedule({"enabled": False, "hour": s.get("hour", 3)})
+    _save_backup_schedule({"enabled": False, "interval": s.get("interval", "1d")})
     _signal_bot_reload()
     ok("Авто-бэкап отключён")
 
 def cmd_backup_auto_status():
     s = _load_backup_schedule()
     if s.get("enabled"):
-        info(f"Авто-бэкап: включён, ежедневно в {s.get('hour', 3):02d}:00")
+        info(f"Авто-бэкап: включён, {_format_interval(s.get('interval', '1d'))}")
     else:
         info("Авто-бэкап: отключён")
 
@@ -1381,7 +1425,7 @@ def usage():
             "coreupdate":  _fmt("telmgr coreupdate",                "Обновить Docker образ прокси (telemt)"),
             "backup":      _fmt("telmgr backup",                    "Создать бэкап"),
             "bk_auto":     _fmt("telmgr backup auto [status]",      "Статус авто-бэкапа"),
-            "bk_en":       _fmt("telmgr backup auto enable [hour]", "Включить авто-бэкап (default: 3:00)"),
+            "bk_en":       _fmt("telmgr backup auto enable [N{h|d|w|m}]", "Включить авто-бэкап (default: 1d). Пример: 3h, 7d, 2w"),
             "bk_dis":      _fmt("telmgr backup auto disable",       "Отключить авто-бэкап"),
             "restore":     _fmt("telmgr restore <file>",            "Восстановить из бэкапа"),
             "uninstall":   _fmt("telmgr uninstall",                 "Полностью удалить telmgr"),
@@ -1420,7 +1464,7 @@ def usage():
             "coreupdate":  _fmt("telmgr coreupdate",                "Update telemt Docker image"),
             "backup":      _fmt("telmgr backup",                    "Create backup"),
             "bk_auto":     _fmt("telmgr backup auto [status]",      "Auto-backup status"),
-            "bk_en":       _fmt("telmgr backup auto enable [hour]", "Enable auto-backup (default: 3:00)"),
+            "bk_en":       _fmt("telmgr backup auto enable [N{h|d|w|m}]", "Enable auto-backup (default: 1d). Examples: 3h, 7d, 2w"),
             "bk_dis":      _fmt("telmgr backup auto disable",       "Disable auto-backup"),
             "restore":     _fmt("telmgr restore <file>",            "Restore from backup"),
             "uninstall":   _fmt("telmgr uninstall",                 "Fully remove telmgr"),
@@ -1487,8 +1531,8 @@ def main():
         if len(args) > 1 and args[1] == "auto":
             sub = args[2] if len(args) > 2 else "status"
             if sub == "enable":
-                hour = int(args[3]) if len(args) > 3 else 3
-                cmd_backup_auto_enable(hour)
+                interval = args[3] if len(args) > 3 else "1d"
+                cmd_backup_auto_enable(interval)
             elif sub == "disable":
                 cmd_backup_auto_disable()
             else:
