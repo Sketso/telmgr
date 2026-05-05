@@ -240,7 +240,7 @@ services:
   mtproto-zig:
     image: ghcr.io/sleep3r/mtproto.zig:latest
     container_name: mtproto-zig
-    restart: unless-stopped
+    restart: always
     volumes:
       - ./mtproto-zig.toml:/etc/mtproto-proxy/config.toml:ro
     ports:
@@ -297,7 +297,7 @@ services:
   telemt:
     image: whn0thacked/telemt-docker:latest
     container_name: telemt
-    restart: unless-stopped
+    restart: always
     environment:
       RUST_LOG: "info"
     volumes:
@@ -333,7 +333,7 @@ $TELEMT_SERVICE
   telmgr-bot:
     image: python:3.11-slim
     container_name: telmgr-bot
-    restart: unless-stopped
+    restart: always
     working_dir: /app
     volumes:
       - ./bot.py:/app/bot.py:ro
@@ -365,7 +365,7 @@ $TELEMT_SERVICE
   telmgr-api:
     image: python:3.11-slim
     container_name: telmgr-api
-    restart: unless-stopped
+    restart: always
     working_dir: /app
     volumes:
       - ./.env:/app/.env:ro
