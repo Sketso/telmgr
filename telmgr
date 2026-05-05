@@ -1347,6 +1347,7 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
         save_meta(meta)
         if expires:
             add_cron(name, expires)
+        reload_proxy()
         self._send_json({"link": build_link(secret), "expires": expires})
 
     def _handle_backup(self):
