@@ -766,7 +766,21 @@ def cmd_update():
         capture_output=True, text=True
     )
     if "telmgr-api" in api_result.stdout:
+        # Migration: add docker.sock to telmgr-api so SIGHUP can reach proxy container
+        compose_path = os.path.join(TELEMT_DIR, "docker-compose.yml")
+        if os.path.exists(compose_path):
+            with open(compose_path) as f:
+                compose = f.read()
+            if "telmgr-api" in compose and "/var/run/docker.sock" not in compose:
+                compose = compose.replace(
+                    "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n    environment:",
+                    "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n      - /var/run/docker.sock:/var/run/docker.sock\n    environment:"
+                )
+                with open(compose_path, "w") as f:
+                    f.write(compose)
+                info("Добавлен docker.sock для telmgr-api" if ru else "Added docker.sock to telmgr-api")
         info("Restarting telmgr-api..." if not ru else "Перезапускаем telmgr-api...")
+        subprocess.run(["docker", "compose", "up", "-d", "telmgr-api"], cwd=TELEMT_DIR, check=False)
         subprocess.run(["docker", "compose", "restart", "telmgr-api"], cwd=TELEMT_DIR, check=False)
         ok("telmgr-api restarted" if not ru else "telmgr-api перезапущен")
 
@@ -944,6 +958,7 @@ def _cmd_bot_setup_slave():
             "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
             f"      - ./{toml_filename}:/app/data/{toml_filename}\n"
             "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
+            "      - /var/run/docker.sock:/var/run/docker.sock\n"
             "    environment:\n"
             "      - TELEMT_DIR=/app/data\n"
             "    env_file:\n"

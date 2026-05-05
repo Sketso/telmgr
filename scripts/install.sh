@@ -372,6 +372,7 @@ $TELEMT_SERVICE
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - $PROXY_CONFIG:/app/data/$(basename "$PROXY_CONFIG")
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TELEMT_DIR=/app/data
     env_file:
