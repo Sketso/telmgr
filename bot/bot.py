@@ -258,40 +258,68 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
 # === Scheduler ===
-async def disable_user_job(name: str, admin_id: int):
+def _disable_job_id(server_id: str, name: str) -> str:
+    return "disable_" + server_id + "_" + name
+
+def client_for_server(server_id: str):
+    """Возвращает клиента для конкретного сервера (а не для контекста юзера)."""
+    cfg = load_servers_config()
+    info_data = cfg.get("servers", {}).get(server_id)
+    if info_data is None:
+        return None
+    if info_data.get("url") == "local":
+        return LocalServerClient(info_data)
+    return RemoteServerClient(info_data)
+
+async def disable_user_job(name: str, admin_id: int, server_id: str = "local"):
     try:
-        telmgr.cmd_disable(name)
-        await bot.send_message(admin_id, "⏰ Лимит истёк — юзер <b>" + name + "</b> отключён", parse_mode="HTML")
+        client = client_for_server(server_id)
+        if client is None:
+            raise ValueError("сервер '" + server_id + "' не найден в реестре")
+        await client.disable_user(name)
+        try:
+            await bot.send_message(admin_id, "⏰ Лимит истёк — юзер <b>" + name + "</b> отключён", parse_mode="HTML")
+        except Exception:
+            pass
     except Exception as e:
         try:
             await bot.send_message(SUPER_ADMIN_ID, "❌ Ошибка при автоотключении юзера " + name + ": " + str(e))
         except Exception:
             pass
 
-def schedule_user_disable(name: str, expires: str, admin_id: int):
+def schedule_user_disable(name: str, expires: str, admin_id: int, server_id: str = "local"):
     dt = datetime.strptime(expires, "%Y-%m-%d").replace(hour=12, minute=0)
     if dt > datetime.now():
-        job_id = "disable_" + name
+        job_id = _disable_job_id(server_id, name)
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
         scheduler.add_job(
             disable_user_job,
             trigger=DateTrigger(run_date=dt),
-            args=[name, admin_id],
+            args=[name, admin_id, server_id],
             id=job_id
         )
 
-def load_scheduled_jobs() -> list:
-    meta = telmgr.load_meta()
+async def load_scheduled_jobs() -> list:
+    """Сканирует все серверы (а не только локальный) и планирует авто-отключения.
+    Возвращает список (name, admin_id, server_id) уже просроченных юзеров."""
+    cfg = load_servers_config()
     overdue = []
-    for name, data in meta.items():
-        if data.get('expires') and not data.get('disabled'):
-            admin_id = data.get('admin_id') or SUPER_ADMIN_ID
-            dt = datetime.strptime(data['expires'], "%Y-%m-%d").replace(hour=12, minute=0)
-            if dt <= datetime.now():
-                overdue.append((name, admin_id))
-            else:
-                schedule_user_disable(name, data['expires'], admin_id)
+    for sid, info_data in cfg.get("servers", {}).items():
+        try:
+            client = LocalServerClient(info_data) if info_data.get("url") == "local" else RemoteServerClient(info_data)
+            users = await client.get_users()
+        except Exception:
+            # недоступный сервер пропускаем — переразберёмся при следующем рестарте/SIGHUP
+            continue
+        for name, data in users.items():
+            if data.get('expires') and not data.get('disabled'):
+                admin_id = data.get('admin_id') or SUPER_ADMIN_ID
+                dt = datetime.strptime(data['expires'], "%Y-%m-%d").replace(hour=12, minute=0)
+                if dt <= datetime.now():
+                    overdue.append((name, admin_id, sid))
+                else:
+                    schedule_user_disable(name, data['expires'], admin_id, sid)
     return overdue
 
 # === Admins storage ===
@@ -532,6 +560,7 @@ async def add_user_days(message: Message, state: FSMContext):
 
     data = await state.get_data()
     name = data['name']
+    server_id = get_user_server_id(message.from_user.id)
     client = get_client(message.from_user.id)
 
     try:
@@ -544,7 +573,7 @@ async def add_user_days(message: Message, state: FSMContext):
         link = result["link"]
         expires = result.get("expires")
         if expires:
-            schedule_user_disable(name, expires, message.from_user.id)
+            schedule_user_disable(name, expires, message.from_user.id, server_id)
         text = "✅ Юзер <b>" + name + "</b> добавлен\n"
         if expires:
             text += "📅 Истекает: " + expires + "\n"
@@ -650,6 +679,7 @@ async def limit_user_days(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     name = data['name']
+    server_id = get_user_server_id(message.from_user.id)
     client = get_client(message.from_user.id)
     try:
         users = await client.get_users()
@@ -663,14 +693,14 @@ async def limit_user_days(message: Message, state: FSMContext):
             return
         await client.set_limit(name, days)
         if days == 0:
-            job_id = "disable_" + name
+            job_id = _disable_job_id(server_id, name)
             if scheduler.get_job(job_id):
                 scheduler.remove_job(job_id)
             await message.answer("✅ Лимит для <b>" + name + "</b> снят", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
         else:
             expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            schedule_user_disable(name, expires, message.from_user.id)
+            schedule_user_disable(name, expires, message.from_user.id, server_id)
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
     except (ValueError, Exception) as e:
@@ -1125,10 +1155,10 @@ async def backup_auto_cmd_handler(message: Message):
 async def main():
     import signal as _signal
     from aiogram.types import BotCommand
-    overdue = load_scheduled_jobs()
+    overdue = await load_scheduled_jobs()
     scheduler.start()
-    for name, admin_id in overdue:
-        asyncio.create_task(disable_user_job(name, admin_id))
+    for name, admin_id, server_id in overdue:
+        asyncio.create_task(disable_user_job(name, admin_id, server_id))
     apply_backup_schedule()
     try:
         loop = asyncio.get_running_loop()
