@@ -5,7 +5,7 @@ import os
 import sys
 import re
 import json
-from datetime import datetime, timedelta, timedelta as _td
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -472,7 +472,7 @@ def owns_user(user_id: int, users: dict, name: str) -> bool:
         return True
     return str(users.get(name, {}).get('admin_id')) == str(user_id)
 
-def format_users(users: dict, toml_users: dict) -> str:
+def format_users(users: dict) -> str:
     if not users:
         return "Юзеров нет"
     lines = []
@@ -580,7 +580,7 @@ async def add_user_days(message: Message, state: FSMContext):
             text += "📅 Истекает: " + expires + "\n"
         text += "🔗 <code>" + link + "</code>"
         await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await message.answer("❌ Ошибка: " + str(e))
 
     await state.clear()
@@ -608,7 +608,7 @@ async def delete_user_name(message: Message, state: FSMContext):
         await client.delete_user(name)
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -646,7 +646,7 @@ async def toggle_user_name(message: Message, state: FSMContext):
             await client.disable_user(name)
             await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -704,7 +704,7 @@ async def limit_user_days(message: Message, state: FSMContext):
             schedule_user_disable(name, expires, message.from_user.id, server_id)
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -737,7 +737,7 @@ async def link_user_name(message: Message, state: FSMContext):
         else:
             await message.answer("🔗 <code>" + link + "</code>",
                                  parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await message.answer("❌ Ошибка: " + str(e))
     await state.clear()
 
@@ -746,10 +746,10 @@ async def cb_my_users(cb: CallbackQuery):
     client = get_client(cb.from_user.id)
     try:
         all_users = await client.get_users()
-        my = {k: v for k, v in all_users.items() if v.get('admin_id') == cb.from_user.id}
-        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my, my)
+        my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
+        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my)
         await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
@@ -778,7 +778,7 @@ async def cb_expiring_users(cb: CallbackQuery):
             emoji = "🔥" if diff <= 1 else "⚠️"
             lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
         await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
@@ -815,7 +815,7 @@ async def cb_all_users(cb: CallbackQuery):
                 lines.append("  " + status + " <b>" + name + "</b> — до " + expires)
             lines.append("")
         await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 

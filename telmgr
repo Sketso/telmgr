@@ -935,7 +935,7 @@ def _cmd_bot_setup_master():
             "    env_file:\n"
             "      - .env\n"
             "    command: >\n"
-            '      sh -c "pip install aiogram python-dotenv apscheduler --quiet &&\n'
+            '      sh -c "pip install aiogram==3.26.0 python-dotenv apscheduler --quiet &&\n'
             '             python3 bot.py"\n'
             "    logging:\n"
             "      driver: json-file\n"
@@ -1054,6 +1054,9 @@ def _cmd_bot_setup_slave():
     print(f"  {BOLD}telmgr server add \"Название\" http://{server_ip}:{api_port} {api_key}{RESET}")
     print()
     warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
+    warn("API работает по plain HTTP — ключ и секреты юзеров идут без шифрования. "
+         "Ограничь доступ к порту (ufw allow from <IP мастера>) или прокинь через "
+         "доверенную сеть/VPN/TLS-реверс-прокси.")
 
 def cmd_backup_auto_enable(interval="1d"):
     if not _parse_interval(interval):

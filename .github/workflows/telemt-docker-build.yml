@@ -30,9 +30,6 @@ env:
   UPSTREAM_OWNER: telemt
   UPSTREAM_REPO: telemt
 
-  RUST_IMAGE: docker.io/library/rust:alpine
-  DISTROLESS_IMAGE: gcr.io/distroless/static:nonroot
-
   STATE_FILE: .github/telemt-docker/state.json
 
 jobs:

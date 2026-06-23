@@ -349,7 +349,7 @@ $TELEMT_SERVICE
     env_file:
       - .env
     command: >
-      sh -c "pip install aiogram python-dotenv apscheduler --quiet &&
+      sh -c "pip install aiogram==3.26.0 python-dotenv apscheduler --quiet &&
              python3 bot.py"
     logging:
       driver: json-file
@@ -534,6 +534,9 @@ if $BOT_SLAVE; then
     echo ""
     echo -e "On the master server run:"
     echo -e "  ${BOLD}telmgr server add \"Name\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
+    echo ""
+    warn "API is plain HTTP — the key and user secrets travel unencrypted."
+    warn "Restrict the port to the master's IP (ufw allow from <master_ip> to any port $TELMGR_API_PORT) or tunnel it over a trusted network/VPN/TLS proxy."
     echo ""
 fi
 echo -e "Manage: ${BOLD}telmgr --help${RESET}"
