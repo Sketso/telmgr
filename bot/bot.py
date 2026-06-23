@@ -34,8 +34,6 @@ telmgr = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(telmgr)
 
-import urllib.request, urllib.error
-
 # === Server clients ===
 
 class LocalServerClient:
@@ -156,25 +154,12 @@ class RemoteServerClient:
         self.port = info.get("port", "")
         self._base = info["url"].rstrip("/")
         self._key = info["api_key"]
+        self._fp = info.get("cert_fp")
 
     def _request(self, method: str, path: str, body: dict = None) -> dict:
-        url = f"{self._base}{path}"
-        data = json.dumps(body).encode() if body else None
-        req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("Authorization", f"Bearer {self._key}")
-        req.add_header("Content-Type", "application/json")
+        # pinned HTTPS (или legacy http) — единая реализация в telmgr
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read())
-                if "error" in result:
-                    raise ValueError(result["error"])
-                return result
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = json.loads(e.read())
-                raise ValueError(err_body.get("error", str(e)))
-            except (json.JSONDecodeError, AttributeError):
-                raise ValueError(str(e))
+            return telmgr._api_request(self._base, self._key, method, path, body=body, cert_fp=self._fp)
         except ValueError:
             raise
         except Exception as e:
@@ -1003,7 +988,7 @@ async def add_server_url(message: Message, state: FSMContext):
         await message.answer("❌ URL должен начинаться с http:// или https://")
         return
     await state.update_data(url=url)
-    await message.answer("Введи API ключ сервера:")
+    await message.answer("Введи токен ноды (строку после URL из вывода установки — вида <code>ключ:отпечаток</code>):", parse_mode="HTML")
     await state.set_state(AddServer.waiting_key)
 
 @dp.message(AddServer.waiting_key)
@@ -1012,22 +997,24 @@ async def add_server_key(message: Message, state: FSMContext):
     data = await state.get_data()
     name = data["name"]
     url = data["url"]
-    api_key = message.text.strip()
-    test_client = RemoteServerClient({"name": name, "url": url, "api_key": api_key, "host": "", "port": ""})
+    token = message.text.strip()
+    api_key, cert_fp = telmgr._parse_api_token(token)
+    test_client = RemoteServerClient({"name": name, "url": url, "api_key": api_key, "cert_fp": cert_fp, "host": "", "port": ""})
     try:
         status = await test_client._req("GET", "/status")
         host = status.get("host", "")
         port = str(status.get("port", ""))
     except ValueError as e:
-        await message.answer("❌ Не могу подключиться: " + str(e) + "\nПроверь URL и ключ.")
+        await message.answer("❌ Не могу подключиться: " + str(e) + "\nПроверь URL и токен.")
         await state.clear()
         return
     cfg = load_servers_config()
     sid = _secrets.token_hex(4)
-    cfg["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "host": host, "port": port}
+    cfg["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "cert_fp": cert_fp, "host": host, "port": port}
     save_servers_config(cfg)
+    tls_note = "\n🔒 TLS-отпечаток подтверждён" if cert_fp else "\n⚠️ plain HTTP без шифрования"
     await message.answer(
-        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port,
+        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port + tls_note,
         parse_mode="HTML",
         reply_markup=main_keyboard(message.from_user.id)
     )

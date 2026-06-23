@@ -358,6 +358,26 @@ $TELEMT_SERVICE
         max-file: "3"
 EOF
 elif $BOT_SLAVE; then
+    # Self-signed TLS cert for the node API (encrypts master<->node, pinned by fingerprint)
+    CERT_FP=""
+    if [[ "$TELEMT_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        SAN="subjectAltName=IP:$TELEMT_HOST"
+    else
+        SAN="subjectAltName=DNS:$TELEMT_HOST"
+    fi
+    CERT_VOL=""
+    if openssl req -x509 -newkey rsa:2048 -nodes \
+         -keyout "$TELEMT_DIR/.telmgr-api.key" -out "$TELEMT_DIR/.telmgr-api.crt" \
+         -days 3650 -subj "/CN=telmgr-api" -addext "$SAN" >/dev/null 2>&1; then
+        chmod 644 "$TELEMT_DIR/.telmgr-api.key"
+        CERT_FP=$(openssl x509 -in "$TELEMT_DIR/.telmgr-api.crt" -noout -fingerprint -sha256 \
+                  | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z')
+        CERT_VOL=$'      - ./.telmgr-api.crt:/app/data/.telmgr-api.crt:ro\n      - ./.telmgr-api.key:/app/data/.telmgr-api.key:ro'
+        ok "TLS cert for node API generated"
+    else
+        warn "Could not generate TLS cert — node API will run over plain HTTP"
+    fi
+
     # Slave: telemt + telmgr-api
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
 $TELEMT_SERVICE
@@ -371,6 +391,7 @@ $TELEMT_SERVICE
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - $PROXY_CONFIG:/app/data/$(basename "$PROXY_CONFIG")
+$CERT_VOL
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -528,15 +549,24 @@ echo -e "User:  ${CYAN}$FIRST_USER${RESET}"
 echo -e "Link:  ${CYAN}$LINK${RESET}"
 echo ""
 if $BOT_SLAVE; then
+    if [[ -n "$CERT_FP" ]]; then
+        SCHEME="https"; TOKEN="${TELMGR_API_KEY}:${CERT_FP}"
+    else
+        SCHEME="http"; TOKEN="$TELMGR_API_KEY"
+    fi
     echo -e "${BOLD}=== Slave server: registration ===${RESET}"
     echo -e "API port:  ${CYAN}$TELMGR_API_PORT${RESET}"
-    echo -e "API key:   ${CYAN}$TELMGR_API_KEY${RESET}"
+    if [[ -n "$CERT_FP" ]]; then
+        echo -e "Security:  ${GREEN}HTTPS + cert pinning${RESET}"
+    fi
     echo ""
     echo -e "On the master server run:"
-    echo -e "  ${BOLD}telmgr server add \"Name\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
+    echo -e "  ${BOLD}telmgr server add \"Name\" $SCHEME://$TELEMT_HOST:$TELMGR_API_PORT $TOKEN${RESET}"
     echo ""
-    warn "API is plain HTTP — the key and user secrets travel unencrypted."
-    warn "Restrict the port to the master's IP (ufw allow from <master_ip> to any port $TELMGR_API_PORT) or tunnel it over a trusted network/VPN/TLS proxy."
+    warn "Open port $TELMGR_API_PORT/tcp in the firewall if needed (ideally only from the master's IP)."
+    if [[ -z "$CERT_FP" ]]; then
+        warn "API is plain HTTP — key and user secrets travel unencrypted. Restrict the port to the master's IP."
+    fi
     echo ""
 fi
 echo -e "Manage: ${BOLD}telmgr --help${RESET}"

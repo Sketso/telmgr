@@ -59,6 +59,8 @@ else:
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
 SERVERS_PATH = os.path.join(TELEMT_DIR, ".telmgr-servers.json")
+API_CERT_PATH = os.path.join(TELEMT_DIR, ".telmgr-api.crt")
+API_KEY_PATH = os.path.join(TELEMT_DIR, ".telmgr-api.key")
 SCHEDULE_PATH = os.path.join(TELEMT_DIR, ".telmgr-backup-schedule.json")
 PUBLIC_HOST = os.environ.get("TELEMT_HOST")
 PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
@@ -1005,6 +1007,12 @@ def _cmd_bot_setup_slave():
 
     api_key = subprocess.check_output(["openssl", "rand", "-hex", "16"]).decode().strip()
 
+    # Самоподписанный TLS-серт ноды + отпечаток для пиннинга на мастере
+    tls_ok = _gen_api_cert()
+    cert_fp = _api_cert_fingerprint() if tls_ok else None
+    if tls_ok:
+        ok("TLS-серт ноды сгенерирован")
+
     sys.stdout.write(f"Порт API сервера [{API_PORT}]: ")
     sys.stdout.flush()
     port_input = sys.stdin.buffer.readline().decode("utf-8", errors="replace").strip()
@@ -1035,6 +1043,8 @@ def _cmd_bot_setup_slave():
             "      - ./.env:/app/.env:ro\n"
             "      - ./.telmgr-meta.json:/app/data/.telmgr-meta.json\n"
             f"      - ./{toml_filename}:/app/data/{toml_filename}\n"
+            "      - ./.telmgr-api.crt:/app/data/.telmgr-api.crt:ro\n"
+            "      - ./.telmgr-api.key:/app/data/.telmgr-api.key:ro\n"
             "      - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro\n"
             "      - /var/run/docker.sock:/var/run/docker.sock\n"
             "    environment:\n"
@@ -1061,17 +1071,20 @@ def _cmd_bot_setup_slave():
     ok("API сервер запущен!")
 
     server_ip = PUBLIC_HOST or "<IP_ЭТОГО_СЕРВЕРА>"
+    scheme = "https" if cert_fp else "http"
+    token = f"{api_key}:{cert_fp}" if cert_fp else api_key
     print(f"\n{BOLD}=== Slave сервер готов! ==={RESET}")
     print(f"API порт:  {CYAN}{api_port}{RESET}")
-    print(f"API ключ:  {CYAN}{api_key}{RESET}")
+    if cert_fp:
+        print(f"Защита:    {GREEN}HTTPS + пиннинг отпечатка{RESET}")
     print()
     print("На Master сервере выполни:")
-    print(f"  {BOLD}telmgr server add \"Название\" http://{server_ip}:{api_port} {api_key}{RESET}")
+    print(f"  {BOLD}telmgr server add \"Название\" {scheme}://{server_ip}:{api_port} {token}{RESET}")
     print()
     warn(f"Открой порт {api_port}/tcp в файрволе если нужно!")
-    warn("API работает по plain HTTP — ключ и секреты юзеров идут без шифрования. "
-         "Ограничь доступ к порту (ufw allow from <IP мастера>) или прокинь через "
-         "доверенную сеть/VPN/TLS-реверс-прокси.")
+    if not cert_fp:
+        warn("TLS-серт не сгенерировался — API по plain HTTP без шифрования. "
+             "Поставь openssl и переустанови, либо ограничь порт файрволом.")
 
 def cmd_backup_auto_enable(interval="1d"):
     if not _parse_interval(interval):
@@ -1190,26 +1203,110 @@ def cmd_server_list():
         print(f"{sid:<10} {s.get('name',''):<20} {display_url:<35} {s.get('host',''):<25} {s.get('port','')}")
     print()
 
+# === Защита API ноды: самоподписанный TLS + пиннинг отпечатка ===
+def _gen_api_cert():
+    """Генерит самоподписанный серт ноды (если ещё нет). Нужен openssl (есть на
+    хосте; в контейнере серт уже примонтирован). Возвращает True, если есть серт+ключ."""
+    if os.path.exists(API_CERT_PATH) and os.path.exists(API_KEY_PATH):
+        return True
+    host = PUBLIC_HOST or "telmgr"
+    if re.match(r'^\d+\.\d+\.\d+\.\d+$', host):
+        san = f"subjectAltName=IP:{host}"
+    else:
+        san = f"subjectAltName=DNS:{host}"
+    try:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", API_KEY_PATH, "-out", API_CERT_PATH, "-days", "3650",
+             "-subj", "/CN=telmgr-api", "-addext", san],
+            check=True, capture_output=True,
+        )
+        os.chmod(API_KEY_PATH, 0o644)  # чтобы Docker смонтировал в контейнер
+        return True
+    except Exception as e:
+        warn(f"Не удалось сгенерировать TLS-серт ноды: {e}")
+        return False
+
+def _api_cert_fingerprint():
+    """SHA-256 отпечаток серта ноды (hex, нижний регистр). Чистый stdlib —
+    openssl не нужен (важно: внутри python:3.11-slim openssl CLI нет)."""
+    import ssl as _ssl, hashlib
+    with open(API_CERT_PATH) as f:
+        der = _ssl.PEM_cert_to_DER_cert(f.read())
+    return hashlib.sha256(der).hexdigest().lower()
+
+def _api_request(base_url, api_key, method, path, body=None, cert_fp=None, timeout=10):
+    """HTTP(S)-запрос к API ноды. Для https проверяет отпечаток серта (pinning) —
+    самоподписанный серт ноды принимается, только если совпал закреплённый fp."""
+    import http.client, ssl as _ssl, hashlib
+    from urllib.parse import urlparse
+    u = urlparse(base_url.rstrip("/") + path)
+    is_https = u.scheme == "https"
+    host = u.hostname
+    port = u.port or (443 if is_https else 80)
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if is_https:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE  # доверяем по пиннингу отпечатка, а не CA
+        conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+        conn.connect()
+        if cert_fp:
+            der = conn.sock.getpeercert(True)
+            actual = hashlib.sha256(der).hexdigest().lower()
+            if actual != cert_fp.lower():
+                conn.close()
+                raise ValueError(
+                    f"Отпечаток серта ноды не совпал с закреплённым — возможен MITM "
+                    f"(ожид. {cert_fp[:16]}…, факт. {actual[:16]}…)"
+                )
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        rel = u.path + (("?" + u.query) if u.query else "")
+        conn.request(method, rel, body=data, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        status = resp.status
+    finally:
+        conn.close()
+    result = json.loads(raw) if raw else {}
+    if isinstance(result, dict) and "error" in result:
+        raise ValueError(result["error"])
+    if status >= 400:
+        raise ValueError(f"HTTP {status}")
+    return result
+
+def _parse_api_token(token):
+    """Токен подключения 'ключ:отпечаток' → (api_key, cert_fp). Без ':' — легаси
+    (plaintext http, без пиннинга)."""
+    if ":" in token:
+        key, fp = token.rsplit(":", 1)
+        return key, fp.lower()
+    return token, None
+
 def cmd_server_add(name, url, api_key):
-    import urllib.request, urllib.error
     if not url.startswith("http://") and not url.startswith("https://"):
         err("URL должен начинаться с http:// или https://")
+    key, cert_fp = _parse_api_token(api_key)
     data = load_servers()
-    req = urllib.request.Request(url.rstrip("/") + "/status")
-    req.add_header("Authorization", f"Bearer {api_key}")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status_data = json.loads(resp.read())
+        status_data = _api_request(url, key, "GET", "/status", cert_fp=cert_fp)
         host = status_data.get("host", "")
         port = str(status_data.get("port", ""))
-        ok(f"Сервер доступен: {host}:{port}")
+        ok(f"Сервер доступен: {host}:{port}" + ("  🔒 TLS-отпечаток подтверждён" if cert_fp else ""))
     except Exception as e:
         warn(f"Не удалось подключиться: {e}")
         host, port = "", ""
     sid = subprocess.check_output(["openssl", "rand", "-hex", "4"]).decode().strip()
-    data["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "host": host, "port": port}
+    data["servers"][sid] = {"name": name, "url": url, "api_key": key, "cert_fp": cert_fp, "host": host, "port": port}
     save_servers(data)
     ok(f"Сервер '{name}' добавлен (ID: {sid})")
+    if not cert_fp and url.startswith("http://"):
+        warn("Подключение по plain HTTP без пиннинга — ключ и секреты идут без шифрования.")
 
 def cmd_server_remove(sid):
     sid = resolve_server_id(sid)
@@ -1232,19 +1329,16 @@ def cmd_server_rename(sid, new_name):
     ok(f"Сервер переименован: '{old_name}' → '{new_name}'")
 
 def cmd_server_test(sid):
-    import urllib.request, urllib.error
     sid = resolve_server_id(sid)
     data = load_servers()
     s = data["servers"][sid]
     if s.get("url") == "local":
         ok("Локальный сервер — всегда доступен")
         return
-    req = urllib.request.Request(s["url"].rstrip("/") + "/status")
-    req.add_header("Authorization", f"Bearer {s['api_key']}")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status_data = json.loads(resp.read())
-        ok(f"Доступен. Статус прокси: {status_data.get('proxy_status','?')}, юзеров: {status_data.get('users_active','?')} active")
+        status_data = _api_request(s["url"], s["api_key"], "GET", "/status", cert_fp=s.get("cert_fp"))
+        tls = "  🔒 TLS" if s.get("cert_fp") else ""
+        ok(f"Доступен{tls}. Статус прокси: {status_data.get('proxy_status','?')}, юзеров: {status_data.get('users_active','?')} active")
     except Exception as e:
         err(f"Недоступен: {e}")
 
@@ -1467,8 +1561,17 @@ def cmd_serve():
         err("TELMGR_API_KEY не установлен в .env")
     class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
+
+    use_tls = os.path.exists(API_CERT_PATH) and os.path.exists(API_KEY_PATH)
     with ThreadedTCPServer(("0.0.0.0", API_PORT), _TelmgrAPIHandler) as server:
-        info(f"telmgr API сервер запущен на порту {API_PORT}")
+        if use_tls:
+            import ssl as _ssl
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(API_CERT_PATH, API_KEY_PATH)
+            server.socket = ctx.wrap_socket(server.socket, server_side=True)
+            info(f"telmgr API (HTTPS) запущен на порту {API_PORT}")
+        else:
+            warn(f"TLS-серт ноды не найден — API запущен по plain HTTP на порту {API_PORT}")
         server.serve_forever()
 
 
