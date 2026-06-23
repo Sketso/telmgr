@@ -72,39 +72,40 @@ class LocalServerClient:
     async def add_user(self, name: str, days: int, admin_id: int, admin_name: str, admin_username: str) -> dict:
         loop = asyncio.get_event_loop()
         def _sync():
-            content = telmgr.read_toml()
-            users = telmgr.get_users_from_toml(content)
-            if name in users:
-                raise ValueError(f"Юзер '{name}' уже существует")
-            secret = telmgr.generate_secret()
-            lines = content.splitlines()
-            result_lines, inserted = [], False
-            for line in lines:
-                result_lines.append(line)
-                if line.strip() == "[access.users]" and not inserted:
-                    result_lines.append(f'{name} = "{secret}"')
-                    inserted = True
-            if not inserted:
-                raise ValueError("Секция [access.users] не найдена")
-            telmgr.write_toml("\n".join(result_lines))
-            expires = None
-            if days > 0:
-                expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            meta = telmgr.load_meta()
-            meta[name] = {
-                "secret": secret,
-                "created": datetime.now().strftime("%Y-%m-%d"),
-                "expires": expires,
-                "disabled": False,
-                "admin_id": admin_id,
-                "admin_name": admin_name,
-                "admin_username": admin_username,
-            }
-            telmgr.save_meta(meta)
-            if expires:
-                telmgr.add_cron(name, expires)
-            telmgr.reload_proxy()
-            return {"link": telmgr.build_link(secret), "expires": expires}
+            with telmgr.config_lock():
+                content = telmgr.read_toml()
+                users = telmgr.get_users_from_toml(content)
+                if name in users:
+                    raise ValueError(f"Юзер '{name}' уже существует")
+                secret = telmgr.generate_secret()
+                lines = content.splitlines()
+                result_lines, inserted = [], False
+                for line in lines:
+                    result_lines.append(line)
+                    if line.strip() == "[access.users]" and not inserted:
+                        result_lines.append(f'{name} = "{secret}"')
+                        inserted = True
+                if not inserted:
+                    raise ValueError("Секция [access.users] не найдена")
+                telmgr.write_toml("\n".join(result_lines))
+                expires = None
+                if days > 0:
+                    expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+                meta = telmgr.load_meta()
+                meta[name] = {
+                    "secret": secret,
+                    "created": datetime.now().strftime("%Y-%m-%d"),
+                    "expires": expires,
+                    "disabled": False,
+                    "admin_id": admin_id,
+                    "admin_name": admin_name,
+                    "admin_username": admin_username,
+                }
+                telmgr.save_meta(meta)
+                if expires:
+                    telmgr.add_cron(name, expires)
+                telmgr.reload_proxy()
+                return {"link": telmgr.build_link(secret), "expires": expires}
         return await loop.run_in_executor(None, _sync)
 
     async def delete_user(self, name: str):

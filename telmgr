@@ -5,8 +5,17 @@ import os
 import json
 import re
 import subprocess
+import contextlib
+import functools
+import hmac
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
 
 # === Конфиг ===
 from dotenv import load_dotenv
@@ -66,6 +75,44 @@ def load_meta():
 def save_meta(meta):
     with open(META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
+
+# === Конкурентный доступ ===
+_thread_lock = threading.RLock()
+
+@contextlib.contextmanager
+def config_lock():
+    """Сериализует read-modify-write конфига прокси.
+
+    Внутрипроцессно — RLock (API-сервер многопоточный, бот гоняет операции
+    в executor'е). Межпроцессно — flock на inode telemt.toml, который у CLI
+    (хост) и контейнеров (bot/api) один и тот же через bind-mount, поэтому
+    одновременные правки из разных процессов не затирают друг друга.
+    """
+    with _thread_lock:
+        lock_file = None
+        if _fcntl is not None and os.path.exists(TOML_PATH):
+            try:
+                lock_file = open(TOML_PATH, "r")
+                _fcntl.flock(lock_file, _fcntl.LOCK_EX)
+            except Exception:
+                if lock_file is not None:
+                    lock_file.close()
+                lock_file = None
+        try:
+            yield
+        finally:
+            if lock_file is not None:
+                try:
+                    _fcntl.flock(lock_file, _fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
+
+def _with_config_lock(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with config_lock():
+            return fn(*args, **kwargs)
+    return wrapper
 
 # === TOML хелперы ===
 def read_toml():
@@ -128,6 +175,7 @@ def build_link(secret):
     return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
 
 # === Команды ===
+@_with_config_lock
 def cmd_add(name, days=0):
     if not re.match(r'^[a-zA-Z0-9_]+$', name):
         err("Имя пользователя может содержать только латинские буквы, цифры и _ (кириллица не поддерживается)")
@@ -175,6 +223,7 @@ def cmd_add(name, days=0):
         info(f"📅 Истекает: {expires}")
     info(f"🔗 Ссылка: {build_link(secret)}")
 
+@_with_config_lock
 def cmd_delete(name):
     content = read_toml()
     users = get_users_from_toml(content)
@@ -195,6 +244,7 @@ def cmd_delete(name):
     reload_proxy()
     ok(f"Пользователь '{name}' удалён")
 
+@_with_config_lock
 def cmd_disable(name):
     content = read_toml()
     users = get_users_from_toml(content)
@@ -221,6 +271,7 @@ def cmd_disable(name):
     reload_proxy()
     ok(f"Пользователь '{name}' отключён")
 
+@_with_config_lock
 def cmd_enable(name):
     content = read_toml()
     users = get_users_from_toml(content)
@@ -247,6 +298,7 @@ def cmd_enable(name):
     reload_proxy()
     ok(f"Пользователь '{name}' включён")
 
+@_with_config_lock
 def cmd_limit(name, days):
     content = read_toml()
     users = get_users_from_toml(content)
@@ -492,7 +544,7 @@ def cmd_status():
 
     status, started_at = result.stdout.strip().split(" ", 1)
     started_dt = datetime.fromisoformat(started_at[:19])
-    uptime = datetime.now() - started_dt
+    uptime = datetime.utcnow() - started_dt  # StartedAt у Docker в UTC
     hours, rem = divmod(int(uptime.total_seconds()), 3600)
     minutes = rem // 60
 
@@ -516,7 +568,7 @@ def cmd_status():
     if bot_result.returncode == 0:
         bot_status, bot_started_at = bot_result.stdout.strip().split(" ", 1)
         bot_started_dt = datetime.fromisoformat(bot_started_at[:19])
-        bot_uptime = datetime.now() - bot_started_dt
+        bot_uptime = datetime.utcnow() - bot_started_dt  # StartedAt у Docker в UTC
         bot_hours, bot_rem = divmod(int(bot_uptime.total_seconds()), 3600)
         bot_minutes = bot_rem // 60
 
@@ -596,6 +648,7 @@ GITHUB_RAW = f"https://raw.githubusercontent.com/Sketso/telmgr/{TELMGR_BRANCH}"
 TELMGR_BIN = "/usr/local/bin/telmgr"
 
 def _docker_api(method, path):
+    """Шлёт запрос в docker.sock. Возвращает True, если ответ 2xx/3xx."""
     try:
         import socket as _socket
         sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
@@ -603,16 +656,26 @@ def _docker_api(method, path):
         sock.connect("/var/run/docker.sock")
         req = f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
         sock.sendall(req.encode())
-        sock.recv(4096)
+        resp = sock.recv(4096)
         sock.close()
+        try:
+            status_line = resp.split(b"\r\n", 1)[0].decode("latin1")
+            code = int(status_line.split(" ")[1])
+            return 200 <= code < 400
+        except Exception:
+            return False
     except Exception:
-        pass
+        return False
 
 def reload_proxy():
     if PROXY_CONTAINER == "telemt":
-        _docker_api("POST", f"/containers/{PROXY_CONTAINER}/kill?signal=SIGHUP")
+        success = _docker_api("POST", f"/containers/{PROXY_CONTAINER}/kill?signal=SIGHUP")
     else:
-        _docker_api("POST", f"/containers/{PROXY_CONTAINER}/restart")
+        success = _docker_api("POST", f"/containers/{PROXY_CONTAINER}/restart")
+    if not success:
+        warn(f"Не удалось перезагрузить прокси ({PROXY_CONTAINER}) через docker.sock — "
+             f"изменения применятся после ручного 'telmgr restart'")
+    return success
 
 _INTERVAL_LIMITS = {'h': (1, 23), 'd': (1, 31), 'w': (1, 52), 'm': (1, 12)}
 
@@ -1060,6 +1123,11 @@ def cmd_restore(backup_file):
         info("Отменено")
         return
     with tarfile.open(backup_file, "r:gz") as tar:
+        base = os.path.realpath(TELEMT_DIR)
+        for member in tar.getmembers():
+            target = os.path.realpath(os.path.join(TELEMT_DIR, member.name))
+            if target != base and not target.startswith(base + os.sep):
+                err(f"Небезопасный путь в архиве (path traversal): {member.name}")
         tar.extractall(TELEMT_DIR)
     ok("Файлы восстановлены")
     info(f"Перезапусти контейнеры: docker compose -f {TELEMT_DIR}/docker-compose.yml restart")
@@ -1164,11 +1232,7 @@ def cmd_server_test(sid):
 
 
 # === HTTP API сервер (slave mode) ===
-class TelmgrAPIHandler:
-    def __init__(self):
-        pass
-
-import http.server, socketserver, io, contextlib
+import http.server, socketserver, io
 
 class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -1176,7 +1240,8 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
 
     def _check_auth(self):
         auth = self.headers.get("Authorization", "")
-        if not API_KEY or auth != f"Bearer {API_KEY}":
+        # constant-time сравнение, чтобы не сливать ключ по таймингу
+        if not API_KEY or not hmac.compare_digest(auth, f"Bearer {API_KEY}"):
             self._send_json({"error": "Unauthorized"}, 401)
             return False
         return True
@@ -1267,7 +1332,7 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
                 if len(parts) > 1:
                     try:
                         started_dt = datetime.fromisoformat(parts[1][:19])
-                        uptime_seconds = int((datetime.now() - started_dt).total_seconds())
+                        uptime_seconds = int((datetime.utcnow() - started_dt).total_seconds())
                     except Exception:
                         pass
         except FileNotFoundError:
@@ -1313,41 +1378,42 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
         if not re.match(r'^[a-zA-Z0-9_]+$', name):
             self._send_json({"error": "Недопустимое имя пользователя"}, 400)
             return
-        content = read_toml()
-        users = get_users_from_toml(content)
-        if name in users:
-            self._send_json({"error": f"Пользователь '{name}' уже существует"}, 409)
-            return
-        secret = generate_secret()
-        lines = content.splitlines()
-        result_lines = []
-        inserted = False
-        for line in lines:
-            result_lines.append(line)
-            if line.strip() == "[access.users]" and not inserted:
-                result_lines.append(f'{name} = "{secret}"')
-                inserted = True
-        if not inserted:
-            self._send_json({"error": "Секция [access.users] не найдена"}, 500)
-            return
-        write_toml("\n".join(result_lines))
-        meta = load_meta()
-        expires = None
-        if days and int(days) > 0:
-            expires = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
-        meta[name] = {
-            "secret": secret,
-            "created": datetime.now().strftime("%Y-%m-%d"),
-            "expires": expires,
-            "disabled": False,
-            "admin_id": admin_id,
-            "admin_name": admin_name,
-            "admin_username": admin_username,
-        }
-        save_meta(meta)
-        if expires:
-            add_cron(name, expires)
-        reload_proxy()
+        with config_lock():
+            content = read_toml()
+            users = get_users_from_toml(content)
+            if name in users:
+                self._send_json({"error": f"Пользователь '{name}' уже существует"}, 409)
+                return
+            secret = generate_secret()
+            lines = content.splitlines()
+            result_lines = []
+            inserted = False
+            for line in lines:
+                result_lines.append(line)
+                if line.strip() == "[access.users]" and not inserted:
+                    result_lines.append(f'{name} = "{secret}"')
+                    inserted = True
+            if not inserted:
+                self._send_json({"error": "Секция [access.users] не найдена"}, 500)
+                return
+            write_toml("\n".join(result_lines))
+            meta = load_meta()
+            expires = None
+            if days and int(days) > 0:
+                expires = (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d")
+            meta[name] = {
+                "secret": secret,
+                "created": datetime.now().strftime("%Y-%m-%d"),
+                "expires": expires,
+                "disabled": False,
+                "admin_id": admin_id,
+                "admin_name": admin_name,
+                "admin_username": admin_username,
+            }
+            save_meta(meta)
+            if expires:
+                add_cron(name, expires)
+            reload_proxy()
         self._send_json({"link": build_link(secret), "expires": expires})
 
     def _handle_backup(self):
