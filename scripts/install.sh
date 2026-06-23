@@ -20,6 +20,18 @@ TELMGR_BRANCH="${TELMGR_BRANCH:-master}"
 # === Root? ===
 [[ $EUID -ne 0 ]] && err "Run as root: sudo bash install.sh"
 
+# === apt helper: refresh package lists once, then install ===
+APT_UPDATED=false
+export DEBIAN_FRONTEND=noninteractive   # не зависать на интерактивных промптах apt (needrestart/grub)
+apt_install() {
+    if ! $APT_UPDATED; then
+        info "Updating package lists..."
+        apt-get update -q || warn "apt-get update failed — trying to install anyway"
+        APT_UPDATED=true
+    fi
+    apt-get install -y -q "$@"
+}
+
 # === Check existing installation ===
 if command -v telmgr &>/dev/null; then
     echo -e "${YELLOW}telmgr is already installed.${RESET}"
@@ -58,6 +70,13 @@ if command -v telmgr &>/dev/null; then
     fi
 fi
 
+# === curl (used to install Docker and fetch telmgr/bot.py) ===
+if ! command -v curl &>/dev/null; then
+    info "Installing curl..."
+    apt_install curl
+    ok "curl installed"
+fi
+
 # === Docker ===
 if command -v docker &>/dev/null; then
     ok "Docker already installed"
@@ -67,26 +86,40 @@ else
     ok "Docker installed"
 fi
 
+# === Docker Compose v2 plugin ===
+if ! docker compose version &>/dev/null; then
+    warn "Docker Compose plugin not found — installing..."
+    apt_install docker-compose-plugin || err "Could not install docker-compose-plugin. Install Docker Compose v2 and re-run."
+    ok "Docker Compose plugin installed"
+fi
+
 # === Python3 ===
 if command -v python3 &>/dev/null; then
     ok "Python3 found"
 else
     info "Installing Python3..."
-    apt-get install -y python3 -q
+    apt_install python3
     ok "Python3 installed"
 fi
 
 # === pip3 ===
 if ! command -v pip3 &>/dev/null; then
     info "Installing python3-pip..."
-    apt-get install -y python3-pip -q
+    apt_install python3-pip
     ok "python3-pip installed"
+fi
+
+# === openssl (secrets + node TLS cert) ===
+if ! command -v openssl &>/dev/null; then
+    info "Installing openssl..."
+    apt_install openssl
+    ok "openssl installed"
 fi
 
 # === dnsutils ===
 if ! command -v dig &>/dev/null; then
     info "Installing dnsutils..."
-    apt-get install -y dnsutils -q
+    apt_install dnsutils
     ok "dnsutils installed"
 fi
 
@@ -419,7 +452,11 @@ ok "docker-compose.yml created"
 curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/${TELMGR_BRANCH}/telmgr -o /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
-pip3 install python-dotenv --break-system-packages -q
+# python-dotenv удобен, но не обязателен: у telmgr есть встроенный парсер .env,
+# поэтому установку делаем нефатальной и совместимой со старым pip.
+pip3 install python-dotenv --break-system-packages -q 2>/dev/null \
+    || pip3 install python-dotenv -q 2>/dev/null \
+    || warn "python-dotenv не установлен — telmgr будет читать .env встроенным парсером"
 ok "telmgr installed to /usr/local/bin"
 
 # === First user metadata ===
@@ -497,7 +534,7 @@ SETUP_UFW=${SETUP_UFW:-Y}
 if [[ "$SETUP_UFW" =~ ^[Yy]$ ]]; then
     if ! command -v ufw &>/dev/null; then
         info "Installing UFW..."
-        apt-get install -y ufw -q
+        apt_install ufw
         ok "UFW installed"
     fi
     ufw default deny incoming
@@ -519,7 +556,7 @@ SETUP_F2B=${SETUP_F2B:-Y}
 if [[ "$SETUP_F2B" =~ ^[Yy]$ ]]; then
     if ! command -v fail2ban-client &>/dev/null; then
         info "Installing fail2ban..."
-        apt-get install -y fail2ban -q
+        apt_install fail2ban
         ok "fail2ban installed"
     fi
     cat > /etc/fail2ban/jail.local << 'EOF'
@@ -540,7 +577,7 @@ EOF
 fi
 
 # === Summary ===
-DOMAIN_HEX=$(echo -n "$TELEMT_HOST" | xxd -p)
+DOMAIN_HEX=$(python3 -c "import sys; print(sys.argv[1].encode().hex())" "$TELEMT_HOST")
 LINK="tg://proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
 
 echo ""
