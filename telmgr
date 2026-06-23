@@ -9,7 +9,7 @@ import contextlib
 import functools
 import hmac
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -558,8 +558,8 @@ def cmd_status():
         err(f"Container {PROXY_CONTAINER} not found")
 
     status, started_at = result.stdout.strip().split(" ", 1)
-    started_dt = datetime.fromisoformat(started_at[:19])
-    uptime = datetime.utcnow() - started_dt  # StartedAt у Docker в UTC
+    started_dt = datetime.fromisoformat(started_at[:19]).replace(tzinfo=timezone.utc)  # StartedAt у Docker в UTC
+    uptime = datetime.now(timezone.utc) - started_dt
     hours, rem = divmod(int(uptime.total_seconds()), 3600)
     minutes = rem // 60
 
@@ -582,8 +582,8 @@ def cmd_status():
     )
     if bot_result.returncode == 0:
         bot_status, bot_started_at = bot_result.stdout.strip().split(" ", 1)
-        bot_started_dt = datetime.fromisoformat(bot_started_at[:19])
-        bot_uptime = datetime.utcnow() - bot_started_dt  # StartedAt у Docker в UTC
+        bot_started_dt = datetime.fromisoformat(bot_started_at[:19]).replace(tzinfo=timezone.utc)  # StartedAt у Docker в UTC
+        bot_uptime = datetime.now(timezone.utc) - bot_started_dt
         bot_hours, bot_rem = divmod(int(bot_uptime.total_seconds()), 3600)
         bot_minutes = bot_rem // 60
 
@@ -1349,8 +1349,8 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
                 proxy_status = parts[0]
                 if len(parts) > 1:
                     try:
-                        started_dt = datetime.fromisoformat(parts[1][:19])
-                        uptime_seconds = int((datetime.utcnow() - started_dt).total_seconds())
+                        started_dt = datetime.fromisoformat(parts[1][:19]).replace(tzinfo=timezone.utc)
+                        uptime_seconds = int((datetime.now(timezone.utc) - started_dt).total_seconds())
                     except Exception:
                         pass
         except FileNotFoundError:
