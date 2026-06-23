@@ -18,7 +18,22 @@ except ImportError:
     _fcntl = None
 
 # === Конфиг ===
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # python-dotenv может быть не установлен на хосте (CLI/update должны работать
+    # и без него) — минимальный парсер .env, не перетирающий уже заданные env.
+    def load_dotenv(path):
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except OSError:
+            pass
 
 # Ищем .env в стандартных местах
 _env_paths = [
