@@ -694,6 +694,60 @@ def reload_proxy():
              f"изменения применятся после ручного 'telmgr restart'")
     return success
 
+def _docker_get_json(path):
+    """GET к docker.sock, возвращает распарсенный JSON (или None). Работает и внутри
+    контейнера, где нет docker CLI — нужен только смонтированный /var/run/docker.sock."""
+    import http.client, socket as _socket
+    class _UConn(http.client.HTTPConnection):
+        def connect(self):
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect("/var/run/docker.sock")
+            self.sock = s
+    try:
+        conn = _UConn("localhost", timeout=5)
+        conn.request("GET", path)
+        resp = conn.getresponse()
+        data = resp.read()
+        conn.close()
+        if resp.status >= 400:
+            return None
+        return json.loads(data)
+    except Exception:
+        return None
+
+def container_state(name):
+    """(status, started_at_iso) контейнера через docker.sock, либо (None, None)."""
+    d = _docker_get_json(f"/containers/{name}/json")
+    if not d:
+        return None, None
+    st = d.get("State", {})
+    return st.get("Status"), st.get("StartedAt")
+
+def _uptime_seconds(started_at_iso):
+    if not started_at_iso:
+        return 0
+    try:
+        sdt = datetime.fromisoformat(started_at_iso[:19]).replace(tzinfo=timezone.utc)
+        return int((datetime.now(timezone.utc) - sdt).total_seconds())
+    except Exception:
+        return 0
+
+def local_status():
+    """Статус локального прокси-контейнера + счётчики юзеров (одинаково для CLI,
+    API /status и бота; работает в контейнере через docker.sock)."""
+    status, started = container_state(PROXY_CONTAINER)
+    content = read_toml()
+    users = get_users_from_toml(content)
+    return {
+        "proxy_status": status or "unknown",
+        "uptime_seconds": _uptime_seconds(started),
+        "host": PUBLIC_HOST or "",
+        "port": PUBLIC_PORT,
+        "users_active": sum(1 for u in users.values() if not u["disabled"]),
+        "users_disabled": sum(1 for u in users.values() if u["disabled"]),
+    }
+
 _INTERVAL_LIMITS = {'h': (1, 23), 'd': (1, 31), 'w': (1, 52), 'm': (1, 12)}
 
 def _parse_interval(s):
@@ -1431,36 +1485,9 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"error": "Not found"}, 404)
 
     def _handle_status(self):
-        proxy_status = "unknown"
-        uptime_seconds = 0
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Status}} {{.State.StartedAt}}", PROXY_CONTAINER],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                parts = result.stdout.strip().split(" ", 1)
-                proxy_status = parts[0]
-                if len(parts) > 1:
-                    try:
-                        started_dt = datetime.fromisoformat(parts[1][:19]).replace(tzinfo=timezone.utc)
-                        uptime_seconds = int((datetime.now(timezone.utc) - started_dt).total_seconds())
-                    except Exception:
-                        pass
-        except FileNotFoundError:
-            proxy_status = "running"
-        content = read_toml()
-        users = get_users_from_toml(content)
-        active = sum(1 for u in users.values() if not u['disabled'])
-        disabled = sum(1 for u in users.values() if u['disabled'])
-        self._send_json({
-            "proxy_status": proxy_status,
-            "uptime_seconds": uptime_seconds,
-            "host": PUBLIC_HOST or "",
-            "port": PUBLIC_PORT,
-            "users_active": active,
-            "users_disabled": disabled
-        })
+        # local_status() читает состояние через docker.sock — работает и в
+        # telmgr-api контейнере (где нет docker CLI), раньше тут был фейковый "running"
+        self._send_json(local_status())
 
     def _handle_get_users(self):
         content = read_toml()
