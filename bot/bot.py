@@ -5,6 +5,7 @@ import os
 import sys
 import re
 import json
+import html
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -362,20 +363,10 @@ def add_pending(user_id: int, username: str, full_name: str):
 
 class AddUser(StatesGroup):
     waiting_name = State()
-    waiting_days = State()
+    waiting_days = State()   # своё число дней при добавлении
 
-class DeleteUser(StatesGroup):
-    waiting_name = State()
-
-class LimitUser(StatesGroup):
-    waiting_name = State()
-    waiting_days = State()
-
-class ToggleUser(StatesGroup):
-    waiting_name = State()
-
-class LinkUser(StatesGroup):
-    waiting_name = State()
+class CardLimit(StatesGroup):
+    waiting_days = State()   # своё число дней для лимита из карточки
 
 class AddServer(StatesGroup):
     waiting_name = State()
@@ -394,10 +385,6 @@ def main_keyboard(user_id: int) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text=f"🖥 {server_name} ▼", callback_data="select_server")])
     buttons += [
         [InlineKeyboardButton(text="➕ Добавить юзера", callback_data="add_user")],
-        [InlineKeyboardButton(text="🗑 Удалить юзера", callback_data="delete_user")],
-        [InlineKeyboardButton(text="⏸ Откл/Вкл юзера", callback_data="toggle_user")],
-        [InlineKeyboardButton(text="⏱ Установить лимит", callback_data="limit_user")],
-        [InlineKeyboardButton(text="🔗 Ссылка юзера", callback_data="link_user")],
         [
             InlineKeyboardButton(text="👥 Мои юзеры", callback_data="my_users"),
             InlineKeyboardButton(text="⏰ Истекают", callback_data="expiring_users"),
@@ -464,14 +451,118 @@ def format_users(users: dict) -> str:
     for name, data in users.items():
         status = "🔴" if data.get('disabled') else "🟢"
         expires = data.get('expires') or "∞"
-        lines.append(status + " <b>" + name + "</b> — до " + expires)
+        lines.append(status + " <b>" + esc(name) + "</b> — до " + esc(expires))
     return "\n".join(lines)
+
+
+# === UI helpers (clickable user list + card) ===
+
+MAX_LIST_BUTTONS = 90  # запас под лимит Telegram (~100 кнопок); полную пагинацию добавим отдельно
+
+def esc(s) -> str:
+    """Экранируем HTML — имена/username из Telegram могут содержать < > &."""
+    return html.escape(str(s), quote=False)
+
+CANCEL_ROW = [InlineKeyboardButton(text="⬅️ Отмена", callback_data="cancel")]
+
+async def _edit_or_send(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup):
+    """Редактируем текущее сообщение (плавная навигация), иначе шлём новое."""
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        try:
+            await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+
+def _user_button_label(name: str, data: dict, with_owner: bool = False) -> str:
+    st = "🔴" if data.get('disabled') else "🟢"
+    exp = data.get('expires') or "∞"
+    label = f"{st} {name} · {exp}"
+    if with_owner:
+        owner = data.get('admin_username')
+        owner = ("@" + owner) if owner else (data.get('admin_name') or "CLI")
+        label += f" · {owner}"
+    return label
+
+def users_list_kb(users: dict, with_owner: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    for name in sorted(users.keys()):
+        if len(rows) >= MAX_LIST_BUTTONS:
+            break
+        rows.append([InlineKeyboardButton(
+            text=_user_button_label(name, users[name], with_owner),
+            callback_data="uc:" + name
+        )])
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="umenu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def user_card_text(name: str, data: dict) -> str:
+    status = "🔴 отключён" if data.get('disabled') else "🟢 активен"
+    created = data.get('created') or "—"
+    expires = data.get('expires') or "∞"
+    owner = data.get('admin_username')
+    owner = ("@" + owner) if owner else (data.get('admin_name') or data.get('admin_id') or "CLI")
+    return (
+        f"👤 <b>{esc(name)}</b>\n"
+        f"Статус: {status}\n"
+        f"Создан: {esc(created)}\n"
+        f"Истекает: {esc(expires)}\n"
+        f"Владелец: {esc(owner)}"
+    )
+
+def user_card_kb(name: str, data: dict) -> InlineKeyboardMarkup:
+    toggle = ("▶️ Включить", "utog:" + name) if data.get('disabled') else ("⏸ Отключить", "utog:" + name)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle[0], callback_data=toggle[1])],
+        [
+            InlineKeyboardButton(text="⏱ Лимит", callback_data="ulim:" + name),
+            InlineKeyboardButton(text="🔗 Ссылка", callback_data="ulink:" + name),
+        ],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="udel:" + name)],
+        [
+            InlineKeyboardButton(text="⬅️ К списку", callback_data="my_users"),
+            InlineKeyboardButton(text="🏠 Меню", callback_data="umenu"),
+        ],
+    ])
+
+def days_presets_kb(prefix: str, name: str) -> InlineKeyboardMarkup:
+    """prefix: 'addset' (добавление) | 'uset' (лимит из карточки).
+    callback: <prefix>:<name>:<days>; своё число — <prefix>c:<name>."""
+    presets = [("7 дн.", "7"), ("30 дн.", "30"), ("90 дн.", "90"), ("∞", "0")]
+    row = [InlineKeyboardButton(text=t, callback_data=f"{prefix}:{name}:{d}") for t, d in presets]
+    back_cb = ("uc:" + name) if prefix == "uset" else "cancel"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        row,
+        [InlineKeyboardButton(text="✏️ Своё число", callback_data=f"{prefix}c:{name}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)],
+    ])
+
+async def _load_owned(cb: CallbackQuery, name: str):
+    """Возвращает (client, users) если юзер существует и принадлежит админу, иначе (None, None)."""
+    client = get_client(cb.from_user.id)
+    try:
+        users = await client.get_users()
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return None, None
+    if name not in users:
+        await cb.answer("Юзер не найден (возможно, удалён)", show_alert=True)
+        return None, None
+    if not owns_user(cb.from_user.id, users, name):
+        await cb.answer("⛔ Это юзер другого админа", show_alert=True)
+        return None, None
+    return client, users
+
+async def _show_card(cb: CallbackQuery, name: str, users: dict):
+    await _edit_or_send(cb, user_card_text(name, users[name]), user_card_kb(name, users[name]))
 
 
 # === Handlers ===
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     user_id = message.from_user.id
     if not is_admin(user_id):
         add_pending(user_id, message.from_user.username, message.from_user.full_name)
@@ -492,7 +583,8 @@ async def cmd_start(message: Message):
     await message.answer("Управление Telemt MTProxy:", reply_markup=main_keyboard(user_id))
 
 @dp.message(F.text == "📋 Меню")
-async def cmd_menu(message: Message):
+async def cmd_menu(message: Message, state: FSMContext):
+    await state.clear()
     if not is_admin(message.from_user.id):
         add_pending(message.from_user.id, message.from_user.username, message.from_user.full_name)
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -501,6 +593,23 @@ async def cmd_menu(message: Message):
         await message.answer("⛔ Нет доступа.", reply_markup=kb)
         return
     await message.answer("Управление Telemt MTProxy:", reply_markup=main_keyboard(message.from_user.id))
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=main_keyboard(message.from_user.id))
+
+@dp.callback_query(F.data == "cancel")
+async def cb_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _edit_or_send(cb, "Управление Telemt MTProxy:", main_keyboard(cb.from_user.id))
+    await cb.answer()
+
+@dp.callback_query(F.data == "umenu")
+async def cb_umenu(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await _edit_or_send(cb, "Управление Telemt MTProxy:", main_keyboard(cb.from_user.id))
+    await cb.answer()
 
 @dp.callback_query(F.data == "request_access")
 async def cb_request_access(cb: CallbackQuery):
@@ -520,10 +629,20 @@ async def cb_request_access(cb: CallbackQuery):
     await cb.answer()
 # === User management ===
 
+async def _notify_if_corrupt(e):
+    msg = str(e)
+    if "откат" in msg.lower() or "невалидный" in msg.lower():
+        try:
+            await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + msg)
+        except Exception:
+            pass
+
+# --- Добавление юзера ---
 @dp.callback_query(F.data == "add_user")
 async def cb_add_user(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введи имя нового юзера:")
     await state.set_state(AddUser.waiting_name)
+    await _edit_or_send(cb, "Введи имя нового юзера (латиница, цифры, _):",
+                        InlineKeyboardMarkup(inline_keyboard=[CANCEL_ROW]))
     await cb.answer()
 
 @dp.message(AddUser.waiting_name)
@@ -532,9 +651,54 @@ async def add_user_name(message: Message, state: FSMContext):
     if not re.match(r'^[a-zA-Z0-9_]+$', name):
         await message.answer("❌ Только латинские буквы, цифры и _ (кириллица не поддерживается)")
         return
-    await state.update_data(name=name)
-    await message.answer("На сколько дней? (0 = бессрочно):")
+    client = get_client(message.from_user.id)
+    try:
+        users = await client.get_users()
+    except Exception as e:
+        await message.answer("❌ Ошибка: " + str(e))
+        await state.clear()
+        return
+    if name in users:
+        await message.answer("❌ Юзер '" + esc(name) + "' уже существует, введи другое имя")
+        return
+    await state.clear()
+    await message.answer("Срок для <b>" + esc(name) + "</b>:", parse_mode="HTML",
+                         reply_markup=days_presets_kb("addset", name))
+
+async def _do_add_user(actor, name: str, days: int) -> str:
+    """Создаёт юзера (actor — Message или CallbackQuery). Возвращает текст-результат."""
+    server_id = get_user_server_id(actor.from_user.id)
+    client = get_client(actor.from_user.id)
+    result = await client.add_user(name, days, actor.from_user.id,
+                                   actor.from_user.full_name, actor.from_user.username)
+    link = result["link"]
+    expires = result.get("expires")
+    if expires:
+        schedule_user_disable(name, expires, actor.from_user.id, server_id)
+    text = "✅ Юзер <b>" + esc(name) + "</b> добавлен\n"
+    if expires:
+        text += "📅 Истекает: " + expires + "\n"
+    text += "🔗 <code>" + esc(link) + "</code>"
+    return text
+
+@dp.callback_query(F.data.startswith("addset:"))
+async def cb_add_set_days(cb: CallbackQuery):
+    _, name, days = cb.data.split(":")
+    try:
+        text = await _do_add_user(cb, name, int(days))
+        await _edit_or_send(cb, text, main_keyboard(cb.from_user.id))
+        await cb.answer("Готово")
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+
+@dp.callback_query(F.data.startswith("addsetc:"))
+async def cb_add_set_custom(cb: CallbackQuery, state: FSMContext):
+    name = cb.data.split(":", 1)[1]
     await state.set_state(AddUser.waiting_days)
+    await state.update_data(name=name)
+    await _edit_or_send(cb, "Введи число дней для <b>" + esc(name) + "</b> (0 = бессрочно):",
+                        InlineKeyboardMarkup(inline_keyboard=[CANCEL_ROW]))
+    await cb.answer()
 
 @dp.message(AddUser.waiting_days)
 async def add_user_days(message: Message, state: FSMContext):
@@ -543,266 +707,241 @@ async def add_user_days(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введи число")
         return
-
+    if days < 0:
+        await message.answer("❌ Число дней не может быть отрицательным")
+        return
     data = await state.get_data()
     name = data['name']
-    server_id = get_user_server_id(message.from_user.id)
-    client = get_client(message.from_user.id)
-
+    await state.clear()
     try:
-        result = await client.add_user(
-            name, days,
-            message.from_user.id,
-            message.from_user.full_name,
-            message.from_user.username
-        )
-        link = result["link"]
-        expires = result.get("expires")
-        if expires:
-            schedule_user_disable(name, expires, message.from_user.id, server_id)
-        text = "✅ Юзер <b>" + name + "</b> добавлен\n"
-        if expires:
-            text += "📅 Истекает: " + expires + "\n"
-        text += "🔗 <code>" + link + "</code>"
+        text = await _do_add_user(message, name, days)
         await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
     except Exception as e:
         await message.answer("❌ Ошибка: " + str(e))
 
+# --- Списки юзеров (кликабельные) ---
+@dp.callback_query(F.data == "my_users")
+async def cb_my_users(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-
-@dp.callback_query(F.data == "delete_user")
-async def cb_delete_user(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введи имя юзера для удаления:")
-    await state.set_state(DeleteUser.waiting_name)
-    await cb.answer()
-
-@dp.message(DeleteUser.waiting_name)
-async def delete_user_name(message: Message, state: FSMContext):
-    name = message.text.strip()
-    client = get_client(message.from_user.id)
+    client = get_client(cb.from_user.id)
     try:
-        users = await client.get_users()
-        if name not in users:
-            await message.answer("❌ Юзер '" + name + "' не найден")
-            await state.clear()
-            return
-        if not owns_user(message.from_user.id, users, name):
-            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
-            await state.clear()
-            return
-        await client.delete_user(name)
-        await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
-                             reply_markup=main_keyboard(message.from_user.id))
+        all_users = await client.get_users()
     except Exception as e:
-        error_msg = str(e)
-        await message.answer("❌ Ошибка: " + error_msg)
-        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
-            try:
-                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
-            except Exception:
-                pass
-    await state.clear()
-
-@dp.callback_query(F.data == "toggle_user")
-async def cb_toggle_user(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введи имя юзера для откл/вкл:")
-    await state.set_state(ToggleUser.waiting_name)
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return
+    my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
+    if not my:
+        await _edit_or_send(cb, "👥 У тебя пока нет юзеров.", main_keyboard(cb.from_user.id))
+        await cb.answer()
+        return
+    await _edit_or_send(cb, "👥 <b>Твои юзеры</b> — выбери для управления:", users_list_kb(my))
     await cb.answer()
 
-@dp.message(ToggleUser.waiting_name)
-async def toggle_user_name(message: Message, state: FSMContext):
-    name = message.text.strip()
-    client = get_client(message.from_user.id)
+@dp.callback_query(F.data == "all_users")
+async def cb_all_users(cb: CallbackQuery, state: FSMContext):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    client = get_client(cb.from_user.id)
     try:
-        users = await client.get_users()
-        if name not in users:
-            await message.answer("❌ Юзер '" + name + "' не найден")
-            await state.clear()
-            return
-        if not owns_user(message.from_user.id, users, name):
-            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
-            await state.clear()
-            return
+        all_users = await client.get_users()
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return
+    if not all_users:
+        await _edit_or_send(cb, "👑 Юзеров нет.", main_keyboard(cb.from_user.id))
+        await cb.answer()
+        return
+    note = ""
+    if len(all_users) > MAX_LIST_BUTTONS:
+        note = f"\n\n(показаны первые {MAX_LIST_BUTTONS} из {len(all_users)})"
+    await _edit_or_send(cb, "👑 <b>Все юзеры</b> — выбери для управления:" + note,
+                        users_list_kb(all_users, with_owner=True))
+    await cb.answer()
+
+@dp.callback_query(F.data == "expiring_users")
+async def cb_expiring_users(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    client = get_client(cb.from_user.id)
+    try:
+        all_users = await client.get_users()
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return
+    soon = {}
+    for name, data in all_users.items():
+        if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
+            continue
+        if data.get('expires'):
+            exp = datetime.strptime(data['expires'], "%Y-%m-%d")
+            if (exp - datetime.now()).days <= 5:
+                soon[name] = data
+    if not soon:
+        await _edit_or_send(cb, "✅ Нет юзеров с истекающим сроком в ближайшие 5 дней.",
+                            main_keyboard(cb.from_user.id))
+        await cb.answer()
+        return
+    await _edit_or_send(cb, "⏰ <b>Истекают (≤5 дней)</b> — выбери для управления:",
+                        users_list_kb(soon, with_owner=is_super_admin(cb.from_user.id)))
+    await cb.answer()
+
+# --- Карточка юзера ---
+@dp.callback_query(F.data.startswith("uc:"))
+async def cb_user_card(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    await _show_card(cb, name, users)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("utog:"))
+async def cb_user_toggle(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    try:
         if users[name]['disabled']:
             await client.enable_user(name)
-            await message.answer("✅ Юзер <b>" + name + "</b> включён", parse_mode="HTML",
-                                 reply_markup=main_keyboard(message.from_user.id))
         else:
             await client.disable_user(name)
-            await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
-                                 reply_markup=main_keyboard(message.from_user.id))
+        users = await client.get_users()
+        await _show_card(cb, name, users)
+        await cb.answer("Готово")
     except Exception as e:
-        error_msg = str(e)
-        await message.answer("❌ Ошибка: " + error_msg)
-        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
-            try:
-                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
-            except Exception:
-                pass
-    await state.clear()
+        await _notify_if_corrupt(e)
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
 
-@dp.callback_query(F.data == "limit_user")
-async def cb_limit_user(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введи имя юзера:")
-    await state.set_state(LimitUser.waiting_name)
+@dp.callback_query(F.data.startswith("ulink:"))
+async def cb_user_link(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    try:
+        link = await client.get_link(name)
+        warn = "⚠️ Юзер отключён, но ссылка:\n" if users[name]['disabled'] else ""
+        await cb.message.answer(warn + "🔗 <code>" + esc(link) + "</code>", parse_mode="HTML")
+        await cb.answer()
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+
+@dp.callback_query(F.data.startswith("udelyes:"))
+async def cb_user_delete(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    try:
+        await client.delete_user(name)
+        await cb.answer("Удалён")
+    except Exception as e:
+        await _notify_if_corrupt(e)
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return
+    all_users = await client.get_users()
+    my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
+    if my:
+        await _edit_or_send(cb, "✅ Удалён. 👥 <b>Твои юзеры</b>:", users_list_kb(my))
+    else:
+        await _edit_or_send(cb, "✅ Удалён.", main_keyboard(cb.from_user.id))
+
+@dp.callback_query(F.data.startswith("udel:"))
+async def cb_user_delete_confirm(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, удалить", callback_data="udelyes:" + name),
+         InlineKeyboardButton(text="⬅️ Отмена", callback_data="uc:" + name)],
+    ])
+    await _edit_or_send(cb, "Удалить юзера <b>" + esc(name) + "</b>? Действие необратимо.", kb)
     await cb.answer()
 
-@dp.message(LimitUser.waiting_name)
-async def limit_user_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-    await message.answer("На сколько дней? (0 = снять лимит):")
-    await state.set_state(LimitUser.waiting_days)
+# --- Лимит из карточки ---
+async def _apply_limit(actor, name: str, days: int):
+    server_id = get_user_server_id(actor.from_user.id)
+    client = get_client(actor.from_user.id)
+    await client.set_limit(name, days)
+    job_id = _disable_job_id(server_id, name)
+    if days == 0:
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+    else:
+        expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+        schedule_user_disable(name, expires, actor.from_user.id, server_id)
 
-@dp.message(LimitUser.waiting_days)
-async def limit_user_days(message: Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("usetc:"))
+async def cb_user_set_limit_custom(cb: CallbackQuery, state: FSMContext):
+    name = cb.data.split(":", 1)[1]
+    await state.set_state(CardLimit.waiting_days)
+    await state.update_data(name=name)
+    await _edit_or_send(cb, "Введи число дней для <b>" + esc(name) + "</b> (0 = снять лимит):",
+                        InlineKeyboardMarkup(inline_keyboard=[CANCEL_ROW]))
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("uset:"))
+async def cb_user_set_limit(cb: CallbackQuery):
+    _, name, days = cb.data.split(":")
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    try:
+        await _apply_limit(cb, name, int(days))
+        users = await client.get_users()
+        await _show_card(cb, name, users)
+        await cb.answer("Лимит обновлён")
+    except Exception as e:
+        await _notify_if_corrupt(e)
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+
+@dp.callback_query(F.data.startswith("ulim:"))
+async def cb_user_limit(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    client, users = await _load_owned(cb, name)
+    if not client:
+        return
+    await _edit_or_send(cb, "Лимит для <b>" + esc(name) + "</b> (0 = снять):",
+                        days_presets_kb("uset", name))
+    await cb.answer()
+
+@dp.message(CardLimit.waiting_days)
+async def card_limit_days(message: Message, state: FSMContext):
     try:
         days = int(message.text.strip())
     except ValueError:
         await message.answer("❌ Введи число")
         return
     if days < 0:
-        await message.answer("❌ Количество дней не может быть отрицательным")
+        await message.answer("❌ Число дней не может быть отрицательным")
         return
     data = await state.get_data()
     name = data['name']
-    server_id = get_user_server_id(message.from_user.id)
+    await state.clear()
     client = get_client(message.from_user.id)
     try:
         users = await client.get_users()
         if name not in users:
-            await message.answer("❌ Юзер '" + name + "' не найден")
-            await state.clear()
+            await message.answer("❌ Юзер не найден")
             return
         if not owns_user(message.from_user.id, users, name):
-            await message.answer("⛔ Юзер <b>" + name + "</b> принадлежит другому админу", parse_mode="HTML")
-            await state.clear()
+            await message.answer("⛔ Это юзер другого админа")
             return
-        await client.set_limit(name, days)
+        await _apply_limit(message, name, days)
         if days == 0:
-            job_id = _disable_job_id(server_id, name)
-            if scheduler.get_job(job_id):
-                scheduler.remove_job(job_id)
-            await message.answer("✅ Лимит для <b>" + name + "</b> снят", parse_mode="HTML",
+            await message.answer("✅ Лимит для <b>" + esc(name) + "</b> снят", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
         else:
             expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            schedule_user_disable(name, expires, message.from_user.id, server_id)
-            await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
+            await message.answer("✅ Лимит для <b>" + esc(name) + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
     except Exception as e:
-        error_msg = str(e)
-        await message.answer("❌ Ошибка: " + error_msg)
-        if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
-            try:
-                await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + error_msg)
-            except Exception:
-                pass
-    await state.clear()
-    
-@dp.callback_query(F.data == "link_user")
-async def cb_link_user(cb: CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введи имя юзера:")
-    await state.set_state(LinkUser.waiting_name)
-    await cb.answer()
-
-@dp.message(LinkUser.waiting_name)
-async def link_user_name(message: Message, state: FSMContext):
-    name = message.text.strip()
-    client = get_client(message.from_user.id)
-    try:
-        users = await client.get_users()
-        if name not in users:
-            await message.answer("❌ Юзер '" + name + "' не найден")
-            await state.clear()
-            return
-        link = await client.get_link(name)
-        if users[name]['disabled']:
-            await message.answer("⚠️ Юзер <b>" + name + "</b> отключён, но ссылка:\n🔗 <code>" + link + "</code>",
-                                 parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-        else:
-            await message.answer("🔗 <code>" + link + "</code>",
-                                 parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except Exception as e:
+        await _notify_if_corrupt(e)
         await message.answer("❌ Ошибка: " + str(e))
-    await state.clear()
 
-@dp.callback_query(F.data == "my_users")
-async def cb_my_users(cb: CallbackQuery):
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-        my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
-        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my)
-        await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except Exception as e:
-        await cb.message.answer("❌ Ошибка: " + str(e))
-    await cb.answer()
-
-@dp.callback_query(F.data == "expiring_users")
-async def cb_expiring_users(cb: CallbackQuery):
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-        soon = []
-        for name, data in all_users.items():
-            if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
-                continue
-            if data.get('expires'):
-                exp = datetime.strptime(data['expires'], "%Y-%m-%d")
-                diff = (exp - datetime.now()).days
-                if diff <= 5:
-                    soon.append((name, data['expires'], diff, data.get('disabled', False)))
-        if not soon:
-            await cb.message.answer("✅ Нет юзеров с истекающим сроком в ближайшие 5 дней",
-                                    reply_markup=main_keyboard(cb.from_user.id))
-            await cb.answer()
-            return
-        lines = ["⏰ <b>Истекают в ближайшие 5 дней:</b>\n"]
-        for name, expires, diff, disabled in sorted(soon, key=lambda x: x[2]):
-            status = "🔴" if disabled else "🟢"
-            emoji = "🔥" if diff <= 1 else "⚠️"
-            lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
-        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except Exception as e:
-        await cb.message.answer("❌ Ошибка: " + str(e))
-    await cb.answer()
-
-@dp.callback_query(F.data == "all_users")
-async def cb_all_users(cb: CallbackQuery):
-    if not is_super_admin(cb.from_user.id):
-        await cb.answer("⛔ Нет доступа", show_alert=True)
-        return
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-        admins_data = load_admins()
-        active_admin_ids = set(admins_data.get('admins', {}).keys())
-        groups = {}
-        for name, data in all_users.items():
-            admin_id = data.get('admin_id')
-            admin_username = data.get('admin_username')
-            admin_name = data.get('admin_name')
-            if admin_id is None:
-                key = ("👑 " + cb.from_user.full_name + " (суперадмин / CLI)", False)
-            elif str(admin_id) in active_admin_ids:
-                key = ("👤 @" + admin_username, False) if admin_username else ("👤 " + str(admin_name or admin_id), False)
-            else:
-                key = ("👤 @" + admin_username + " (Удалён)", True) if admin_username else ("👤 " + str(admin_name or admin_id) + " (Удалён)", True)
-            groups.setdefault(key, {})[name] = data
-        lines = ["👑 <b>Все юзеры:</b>\n"]
-        for (admin_label, is_deleted), users in groups.items():
-            if is_deleted and not users:
-                continue
-            lines.append("<b>" + admin_label + ":</b>")
-            for name, data in users.items():
-                status = "🔴" if data.get('disabled') else "🟢"
-                expires = data.get('expires') or "∞"
-                lines.append("  " + status + " <b>" + name + "</b> — до " + expires)
-            lines.append("")
-        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except Exception as e:
-        await cb.message.answer("❌ Ошибка: " + str(e))
-    await cb.answer()
 
 # === Admin management ===
 
