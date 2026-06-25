@@ -228,6 +228,7 @@ def has_multiple_servers() -> bool:
     return len(cfg.get("servers", {})) > 1
 
 _user_server_ctx: dict = {}
+_user_list_ctx: dict = {}  # user_id -> (scope, page): откуда открыта карточка, для «К списку»
 
 def get_user_server_id(user_id: int) -> str:
     if user_id in _user_server_ctx:
@@ -552,6 +553,9 @@ async def _render_user_list(cb: CallbackQuery, scope: str, page: int = 0):
     users, with_owner = await _scope_users(cb, scope)
     if users is None:
         return
+    # запоминаем, из какого среза/страницы открыта карточка — для «К списку»
+    pages = max(1, (len(users) + PAGE_SIZE - 1) // PAGE_SIZE)
+    _user_list_ctx[cb.from_user.id] = (scope, max(0, min(page, pages - 1)))
     if not users:
         empty = {"my": "👥 У тебя пока нет юзеров.", "all": "👑 Юзеров нет.",
                  "exp": "✅ Нет юзеров с истекающим сроком в ближайшие 5 дней."}.get(scope, "Пусто.")
@@ -584,7 +588,7 @@ def user_card_kb(name: str, data: dict) -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="🗑 Удалить", callback_data="udel:" + name)],
         [
-            InlineKeyboardButton(text="⬅️ К списку", callback_data="my_users"),
+            InlineKeyboardButton(text="⬅️ К списку", callback_data="ulist"),
             InlineKeyboardButton(text="🏠 Меню", callback_data="umenu"),
         ],
     ])
@@ -807,6 +811,12 @@ async def cb_page(cb: CallbackQuery):
     await _render_user_list(cb, scope, int(page))
     await cb.answer()
 
+@dp.callback_query(F.data == "ulist")
+async def cb_back_to_list(cb: CallbackQuery):
+    scope, page = _user_list_ctx.get(cb.from_user.id, ("my", 0))
+    await _render_user_list(cb, scope, page)
+    await cb.answer()
+
 @dp.callback_query(F.data == "noop")
 async def cb_noop(cb: CallbackQuery):
     await cb.answer()
@@ -866,13 +876,8 @@ async def cb_user_delete(cb: CallbackQuery):
         await _notify_if_corrupt(e)
         await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
         return
-    all_users = await client.get_users()
-    my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
-    if my:
-        await _edit_or_send(cb, "✅ Удалён. " + _list_title("my", len(my)),
-                            users_list_kb(my, "my", 0))
-    else:
-        await _edit_or_send(cb, "✅ Удалён.", main_keyboard(cb.from_user.id))
+    scope, page = _user_list_ctx.get(cb.from_user.id, ("my", 0))
+    await _render_user_list(cb, scope, page)
 
 @dp.callback_query(F.data.startswith("udel:"))
 async def cb_user_delete_confirm(cb: CallbackQuery):
