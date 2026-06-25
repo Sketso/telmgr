@@ -374,6 +374,27 @@ def remove_pending(user_id) -> bool:
         save_admins(data)
     return removed
 
+def is_banned(user_id) -> bool:
+    return str(user_id) in load_admins().get('banned', {})
+
+def add_banned(user_id, username=None, full_name=None):
+    """Бан: в чёрный список + убрать из pending. Заявки от него больше не доходят."""
+    data = load_admins()
+    data.setdefault('banned', {})[str(user_id)] = {
+        "username": username,
+        "full_name": full_name,
+        "banned_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    data.get('pending', {}).pop(str(user_id), None)
+    save_admins(data)
+
+def remove_banned(user_id) -> bool:
+    data = load_admins()
+    removed = data.get('banned', {}).pop(str(user_id), None) is not None
+    if removed:
+        save_admins(data)
+    return removed
+
 
 # === FSM States ===
 
@@ -425,11 +446,11 @@ def menu_keyboard() -> ReplyKeyboardMarkup:
         persistent=True
     )
 
-def pending_keyboard() -> InlineKeyboardMarkup:
+def admin_requests_kb() -> InlineKeyboardMarkup:
+    """Экран «Добавить админа»: pending-запросы (одобрить/отклонить/бан) + вход в ЧС."""
     data = load_admins()
     pending = data.get('pending', {})
-    if not pending:
-        return None
+    banned = data.get('banned', {})
     buttons = []
     for uid, info in pending.items():
         username = info.get('username')
@@ -440,11 +461,27 @@ def pending_keyboard() -> InlineKeyboardMarkup:
             text="✅ " + label + (" (" + when + ")" if when else ""),
             callback_data="approve_admin_" + uid
         )])
+        buttons.append([
+            InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + uid),
+            InlineKeyboardButton(text="⛔ Бан", callback_data="ban_pending_" + uid),
+        ])
+    if banned:
         buttons.append([InlineKeyboardButton(
-            text="🚫 Отклонить " + label,
-            callback_data="reject_pending_" + uid
-        )])
+            text=f"⛔ Чёрный список ({len(banned)})", callback_data="banlist")])
+    buttons.append([InlineKeyboardButton(text="🏠 Меню", callback_data="umenu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def banlist_kb() -> InlineKeyboardMarkup:
+    data = load_admins()
+    banned = data.get('banned', {})
+    rows = []
+    for uid, info in banned.items():
+        username = info.get('username')
+        full_name = info.get('full_name') or uid
+        label = "@" + username if username else full_name
+        rows.append([InlineKeyboardButton(text="♻️ Разбанить " + label, callback_data="unban_" + uid)])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="add_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def admins_keyboard() -> InlineKeyboardMarkup:
     data = load_admins()
@@ -654,15 +691,19 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     if not is_admin(user_id):
+        if is_banned(user_id):
+            await message.answer("⛔ Нет доступа.")
+            return
         add_pending(user_id, message.from_user.username, message.from_user.full_name)
         await message.answer("⛔ Нет доступа. Запрос отправлен администратору.")
         username = message.from_user.username
         name = message.from_user.full_name
         label = "@" + username if username else name
-        approve_kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(user_id)),
-            InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(user_id)),
-        ]])
+        approve_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(user_id))],
+            [InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(user_id)),
+             InlineKeyboardButton(text="⛔ Бан", callback_data="ban_pending_" + str(user_id))],
+        ])
         await bot.send_message(
             SUPER_ADMIN_ID,
             "🔔 Новый запрос доступа:\n" + label + " (ID: " + str(user_id) + ")",
@@ -676,6 +717,9 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_menu(message: Message, state: FSMContext):
     await state.clear()
     if not is_admin(message.from_user.id):
+        if is_banned(message.from_user.id):
+            await message.answer("⛔ Нет доступа.")
+            return
         add_pending(message.from_user.id, message.from_user.username, message.from_user.full_name)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔔 Запросить доступ", callback_data="request_access")]
@@ -703,15 +747,19 @@ async def cb_umenu(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "request_access")
 async def cb_request_access(cb: CallbackQuery):
+    if is_banned(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
     add_pending(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
     await cb.message.answer("✅ Запрос отправлен администратору.")
     username = cb.from_user.username
     name = cb.from_user.full_name
     label = "@" + username if username else name
-    approve_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(cb.from_user.id)),
-        InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(cb.from_user.id)),
-    ]])
+    approve_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(cb.from_user.id))],
+        [InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(cb.from_user.id)),
+         InlineKeyboardButton(text="⛔ Бан", callback_data="ban_pending_" + str(cb.from_user.id))],
+    ])
     await bot.send_message(
         SUPER_ADMIN_ID,
         "🔔 Повторный запрос доступа:\n" + label + " (ID: " + str(cb.from_user.id) + ")",
@@ -986,16 +1034,19 @@ async def card_limit_days(message: Message, state: FSMContext):
 
 # === Admin management ===
 
+def _requests_text() -> str:
+    data = load_admins()
+    n_pending = len(data.get('pending', {}))
+    if n_pending:
+        return f"Запросы доступа ({n_pending}) — одобрить / отклонить / забанить:"
+    return "Новых запросов нет."
+
 @dp.callback_query(F.data == "add_admin")
 async def cb_add_admin(cb: CallbackQuery):
     if not is_super_admin(cb.from_user.id):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
-    kb = pending_keyboard()
-    if kb is None:
-        await cb.message.answer("Нет pending запросов")
-    else:
-        await cb.message.answer("Выбери кому дать доступ:", reply_markup=kb)
+    await _edit_or_send(cb, _requests_text(), admin_requests_kb())
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("approve_admin_"))
@@ -1029,12 +1080,47 @@ async def cb_reject_pending(cb: CallbackQuery):
         return
     uid = cb.data.replace("reject_pending_", "")
     remove_pending(uid)  # тихо, без уведомления заявителю
-    kb = pending_keyboard()
-    if kb is None:
-        await _edit_or_send(cb, "Запрос отклонён. Других запросов нет.", main_keyboard(cb.from_user.id))
-    else:
-        await _edit_or_send(cb, "Запрос отклонён. Остальные запросы:", kb)
+    await _edit_or_send(cb, "Запрос отклонён.\n\n" + _requests_text(), admin_requests_kb())
     await cb.answer("Отклонён")
+
+@dp.callback_query(F.data.startswith("ban_pending_"))
+async def cb_ban_pending(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = cb.data.replace("ban_pending_", "")
+    info = load_admins().get('pending', {}).get(uid, {})
+    add_banned(uid, info.get('username'), info.get('full_name'))  # + убирает из pending
+    await _edit_or_send(cb, "⛔ Забанен — заявки от него больше не будут доходить.\n\n" + _requests_text(),
+                        admin_requests_kb())
+    await cb.answer("Забанен")
+
+@dp.callback_query(F.data == "banlist")
+async def cb_banlist(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    banned = load_admins().get('banned', {})
+    if not banned:
+        await _edit_or_send(cb, _requests_text(), admin_requests_kb())
+        await cb.answer("Чёрный список пуст")
+        return
+    await _edit_or_send(cb, f"⛔ <b>Чёрный список</b> ({len(banned)}):", banlist_kb())
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("unban_"))
+async def cb_unban(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = cb.data.replace("unban_", "")
+    remove_banned(uid)
+    banned = load_admins().get('banned', {})
+    if banned:
+        await _edit_or_send(cb, f"♻️ Разбанен.\n\n⛔ <b>Чёрный список</b> ({len(banned)}):", banlist_kb())
+    else:
+        await _edit_or_send(cb, "♻️ Разбанен. Чёрный список пуст.\n\n" + _requests_text(), admin_requests_kb())
+    await cb.answer("Разбанен")
 
 @dp.callback_query(F.data == "remove_admin")
 async def cb_remove_admin(cb: CallbackQuery):
