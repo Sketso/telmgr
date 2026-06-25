@@ -468,7 +468,7 @@ def format_users(users: dict) -> str:
 
 # === UI helpers (clickable user list + card) ===
 
-MAX_LIST_BUTTONS = 90  # запас под лимит Telegram (~100 кнопок); полную пагинацию добавим отдельно
+PAGE_SIZE = 8  # юзеров на страницу списка
 
 def esc(s) -> str:
     """Экранируем HTML — имена/username из Telegram могут содержать < > &."""
@@ -496,17 +496,69 @@ def _user_button_label(name: str, data: dict, with_owner: bool = False) -> str:
         label += f" · {owner}"
     return label
 
-def users_list_kb(users: dict, with_owner: bool = False) -> InlineKeyboardMarkup:
+def users_list_kb(users: dict, scope: str, page: int = 0, with_owner: bool = False) -> InlineKeyboardMarkup:
+    names = sorted(users.keys())
+    pages = max(1, (len(names) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    start = page * PAGE_SIZE
     rows = []
-    for name in sorted(users.keys()):
-        if len(rows) >= MAX_LIST_BUTTONS:
-            break
+    for name in names[start:start + PAGE_SIZE]:
         rows.append([InlineKeyboardButton(
             text=_user_button_label(name, users[name], with_owner),
             callback_data="uc:" + name
         )])
+    if pages > 1:
+        rows.append([
+            InlineKeyboardButton(text="◀", callback_data=f"page:{scope}:{page - 1}"),
+            InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="noop"),
+            InlineKeyboardButton(text="▶", callback_data=f"page:{scope}:{page + 1}"),
+        ])
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="umenu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def _list_title(scope: str, total: int) -> str:
+    base = {"my": "👥 <b>Твои юзеры</b>", "all": "👑 <b>Все юзеры</b>",
+            "exp": "⏰ <b>Истекают (≤5 дней)</b>"}.get(scope, "Юзеры")
+    return f"{base} ({total}) — выбери для управления:"
+
+async def _scope_users(cb: CallbackQuery, scope: str):
+    """Возвращает (users_dict, with_owner) для нужного среза или (None, None) при ошибке/отказе."""
+    client = get_client(cb.from_user.id)
+    try:
+        allu = await client.get_users()
+    except Exception as e:
+        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
+        return None, None
+    is_super = is_super_admin(cb.from_user.id)
+    if scope == "all":
+        if not is_super:
+            await cb.answer("⛔ Нет доступа", show_alert=True)
+            return None, None
+        return allu, True
+    if scope == "exp":
+        soon = {}
+        for name, data in allu.items():
+            if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super:
+                continue
+            if data.get('expires'):
+                exp = datetime.strptime(data['expires'], "%Y-%m-%d")
+                if (exp - datetime.now()).days <= 5:
+                    soon[name] = data
+        return soon, is_super
+    my = {k: v for k, v in allu.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
+    return my, False
+
+async def _render_user_list(cb: CallbackQuery, scope: str, page: int = 0):
+    users, with_owner = await _scope_users(cb, scope)
+    if users is None:
+        return
+    if not users:
+        empty = {"my": "👥 У тебя пока нет юзеров.", "all": "👑 Юзеров нет.",
+                 "exp": "✅ Нет юзеров с истекающим сроком в ближайшие 5 дней."}.get(scope, "Пусто.")
+        await _edit_or_send(cb, empty, main_keyboard(cb.from_user.id))
+        return
+    await _edit_or_send(cb, _list_title(scope, len(users)),
+                        users_list_kb(users, scope, page, with_owner))
 
 def user_card_text(name: str, data: dict) -> str:
     status = "🔴 отключён" if data.get('disabled') else "🟢 активен"
@@ -734,67 +786,29 @@ async def add_user_days(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "my_users")
 async def cb_my_users(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-    except Exception as e:
-        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
-        return
-    my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
-    if not my:
-        await _edit_or_send(cb, "👥 У тебя пока нет юзеров.", main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    await _edit_or_send(cb, "👥 <b>Твои юзеры</b> — выбери для управления:", users_list_kb(my))
+    await _render_user_list(cb, "my", 0)
     await cb.answer()
 
 @dp.callback_query(F.data == "all_users")
 async def cb_all_users(cb: CallbackQuery, state: FSMContext):
-    if not is_super_admin(cb.from_user.id):
-        await cb.answer("⛔ Нет доступа", show_alert=True)
-        return
     await state.clear()
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-    except Exception as e:
-        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
-        return
-    if not all_users:
-        await _edit_or_send(cb, "👑 Юзеров нет.", main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    note = ""
-    if len(all_users) > MAX_LIST_BUTTONS:
-        note = f"\n\n(показаны первые {MAX_LIST_BUTTONS} из {len(all_users)})"
-    await _edit_or_send(cb, "👑 <b>Все юзеры</b> — выбери для управления:" + note,
-                        users_list_kb(all_users, with_owner=True))
+    await _render_user_list(cb, "all", 0)
     await cb.answer()
 
 @dp.callback_query(F.data == "expiring_users")
 async def cb_expiring_users(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    client = get_client(cb.from_user.id)
-    try:
-        all_users = await client.get_users()
-    except Exception as e:
-        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
-        return
-    soon = {}
-    for name, data in all_users.items():
-        if str(data.get('admin_id')) != str(cb.from_user.id) and not is_super_admin(cb.from_user.id):
-            continue
-        if data.get('expires'):
-            exp = datetime.strptime(data['expires'], "%Y-%m-%d")
-            if (exp - datetime.now()).days <= 5:
-                soon[name] = data
-    if not soon:
-        await _edit_or_send(cb, "✅ Нет юзеров с истекающим сроком в ближайшие 5 дней.",
-                            main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    await _edit_or_send(cb, "⏰ <b>Истекают (≤5 дней)</b> — выбери для управления:",
-                        users_list_kb(soon, with_owner=is_super_admin(cb.from_user.id)))
+    await _render_user_list(cb, "exp", 0)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("page:"))
+async def cb_page(cb: CallbackQuery):
+    _, scope, page = cb.data.split(":")
+    await _render_user_list(cb, scope, int(page))
+    await cb.answer()
+
+@dp.callback_query(F.data == "noop")
+async def cb_noop(cb: CallbackQuery):
     await cb.answer()
 
 # --- Карточка юзера ---
@@ -855,7 +869,8 @@ async def cb_user_delete(cb: CallbackQuery):
     all_users = await client.get_users()
     my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
     if my:
-        await _edit_or_send(cb, "✅ Удалён. 👥 <b>Твои юзеры</b>:", users_list_kb(my))
+        await _edit_or_send(cb, "✅ Удалён. " + _list_title("my", len(my)),
+                            users_list_kb(my, "my", 0))
     else:
         await _edit_or_send(cb, "✅ Удалён.", main_keyboard(cb.from_user.id))
 
@@ -1028,7 +1043,7 @@ async def cb_revoke_admin(cb: CallbackQuery):
         ]
     ])
     await cb.message.answer(
-        "Удалить админа <b>" + label + "</b>?\n\nУ него " + str(count) + " юзеров.",
+        "Удалить админа <b>" + esc(label) + "</b>?\n\nУ него " + str(count) + " юзеров.",
         parse_mode="HTML",
         reply_markup=kb
     )
@@ -1110,7 +1125,7 @@ async def cb_switch_server(cb: CallbackQuery):
     set_user_server(cb.from_user.id, sid)
     name = cfg["servers"][sid]["name"]
     await cb.message.answer(
-        "✅ Переключено на: <b>" + name + "</b>",
+        "✅ Переключено на: <b>" + esc(name) + "</b>",
         parse_mode="HTML",
         reply_markup=main_keyboard(cb.from_user.id)
     )
@@ -1164,7 +1179,7 @@ async def add_server_key(message: Message, state: FSMContext):
     save_servers_config(cfg)
     tls_note = "\n🔒 TLS-отпечаток подтверждён" if cert_fp else "\n⚠️ plain HTTP без шифрования"
     await message.answer(
-        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port + tls_note,
+        "✅ Сервер <b>" + esc(name) + "</b> добавлен!\nХост: " + esc(host) + ":" + esc(port) + tls_note,
         parse_mode="HTML",
         reply_markup=main_keyboard(message.from_user.id)
     )
