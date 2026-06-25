@@ -395,6 +395,53 @@ def remove_banned(user_id) -> bool:
         save_admins(data)
     return removed
 
+# --- Приглашение админа по username ---
+# Bot API не умеет резолвить @username -> id, поэтому храним приглашённые
+# username'ы и выдаём админа автоматически, когда человек впервые откроет бота.
+USERNAME_RE = re.compile(r'^[A-Za-z0-9_]{4,32}$')
+
+def _norm_username(s: str) -> str:
+    return (s or "").strip().lstrip('@').lower()
+
+def grant_admin(user_id, username=None, full_name=None):
+    """Прямая выдача админа (с подписью), убирает из pending/invited/banned."""
+    data = load_admins()
+    data.setdefault('admins', {})[str(user_id)] = {"username": username, "full_name": full_name}
+    data.get('pending', {}).pop(str(user_id), None)
+    if username:
+        data.get('invited', {}).pop(username.lower(), None)
+    data.get('banned', {}).pop(str(user_id), None)
+    save_admins(data)
+
+def add_invited(username: str, by_id=None) -> str:
+    """Добавляет username в приглашённые. Возвращает нормализованный username."""
+    u = _norm_username(username)
+    data = load_admins()
+    data.setdefault('invited', {})[u] = {
+        "added_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "by": by_id,
+    }
+    save_admins(data)
+    return u
+
+def remove_invited(username: str) -> bool:
+    data = load_admins()
+    removed = data.get('invited', {}).pop(_norm_username(username), None) is not None
+    if removed:
+        save_admins(data)
+    return removed
+
+def pop_invited_for(username: str) -> bool:
+    """Если username приглашён — убрать из invited и вернуть True."""
+    if not username:
+        return False
+    data = load_admins()
+    if username.lower() in data.get('invited', {}):
+        data['invited'].pop(username.lower(), None)
+        save_admins(data)
+        return True
+    return False
+
 
 # === FSM States ===
 
@@ -409,6 +456,9 @@ class AddServer(StatesGroup):
     waiting_name = State()
     waiting_url  = State()
     waiting_key  = State()
+
+class InviteAdmin(StatesGroup):
+    waiting_username = State()
 
 
 # === Keyboards ===
@@ -465,11 +515,24 @@ def admin_requests_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + uid),
             InlineKeyboardButton(text="⛔ Бан", callback_data="ban_pending_" + uid),
         ])
+    invited = data.get('invited', {})
+    buttons.append([InlineKeyboardButton(text="✍️ Пригласить по @username", callback_data="invite_username")])
+    if invited:
+        buttons.append([InlineKeyboardButton(
+            text=f"✉️ Приглашённые ({len(invited)})", callback_data="invitelist")])
     if banned:
         buttons.append([InlineKeyboardButton(
             text=f"⛔ Чёрный список ({len(banned)})", callback_data="banlist")])
     buttons.append([InlineKeyboardButton(text="🏠 Меню", callback_data="umenu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def invitelist_kb() -> InlineKeyboardMarkup:
+    invited = load_admins().get('invited', {})
+    rows = []
+    for uname in invited:
+        rows.append([InlineKeyboardButton(text="🗑 @" + uname, callback_data="uninvite_" + uname)])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="add_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def banlist_kb() -> InlineKeyboardMarkup:
     data = load_admins()
@@ -686,6 +749,25 @@ async def _show_card(cb: CallbackQuery, name: str, users: dict, client=None):
 
 # === Handlers ===
 
+async def _try_grant_invited(user) -> bool:
+    """Если username юзера в приглашённых — выдать админа и уведомить суперадмина. True, если выдали."""
+    uname = getattr(user, 'username', None)
+    if uname and pop_invited_for(uname):
+        grant_admin(user.id, uname, getattr(user, 'full_name', None))
+        try:
+            await bot.send_message(
+                SUPER_ADMIN_ID,
+                "✅ Приглашённый @" + esc(uname) + " (ID: " + str(user.id) + ") активировал доступ админа.")
+        except Exception:
+            pass
+        return True
+    return False
+
+async def _welcome_admin(message: Message, invited: bool = False):
+    greet = "👋 Тебе выдан доступ админа!" if invited else "👋 Привет!"
+    await message.answer(greet, reply_markup=menu_keyboard())
+    await message.answer("Управление Telemt MTProxy:", reply_markup=main_keyboard(message.from_user.id))
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -693,6 +775,9 @@ async def cmd_start(message: Message, state: FSMContext):
     if not is_admin(user_id):
         if is_banned(user_id):
             await message.answer("⛔ Нет доступа.")
+            return
+        if await _try_grant_invited(message.from_user):
+            await _welcome_admin(message, invited=True)
             return
         add_pending(user_id, message.from_user.username, message.from_user.full_name)
         await message.answer("⛔ Нет доступа. Запрос отправлен администратору.")
@@ -719,6 +804,9 @@ async def cmd_menu(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         if is_banned(message.from_user.id):
             await message.answer("⛔ Нет доступа.")
+            return
+        if await _try_grant_invited(message.from_user):
+            await _welcome_admin(message, invited=True)
             return
         add_pending(message.from_user.id, message.from_user.username, message.from_user.full_name)
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1121,6 +1209,69 @@ async def cb_unban(cb: CallbackQuery):
     else:
         await _edit_or_send(cb, "♻️ Разбанен. Чёрный список пуст.\n\n" + _requests_text(), admin_requests_kb())
     await cb.answer("Разбанен")
+
+# --- Приглашение админа по username ---
+@dp.callback_query(F.data == "invite_username")
+async def cb_invite_username(cb: CallbackQuery, state: FSMContext):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.set_state(InviteAdmin.waiting_username)
+    await _edit_or_send(
+        cb,
+        "Введи username будущего админа — можно <code>@username</code> или просто <code>username</code>.\n\n"
+        "Доступ выдастся автоматически, как только он откроет бота.",
+        InlineKeyboardMarkup(inline_keyboard=[CANCEL_ROW]),
+    )
+    await cb.answer()
+
+@dp.message(InviteAdmin.waiting_username)
+async def invite_username_input(message: Message, state: FSMContext):
+    uname = _norm_username(message.text)
+    if not USERNAME_RE.match(uname):
+        await message.answer("❌ Похоже на некорректный username. Допустимо 4–32 символа: латиница, цифры, _ (с @ или без).")
+        return
+    await state.clear()
+    # уже админ?
+    data = load_admins()
+    for uid, info in data.get('admins', {}).items():
+        if (info.get('username') or "").lower() == uname:
+            await message.answer("ℹ️ @" + esc(uname) + " уже админ.",
+                                 reply_markup=main_keyboard(message.from_user.id))
+            return
+    add_invited(uname, message.from_user.id)
+    await message.answer(
+        "✅ @" + esc(uname) + " приглашён.\nКак только он напишет боту /start — получит доступ админа автоматически.",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(message.from_user.id),
+    )
+
+@dp.callback_query(F.data == "invitelist")
+async def cb_invitelist(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    invited = load_admins().get('invited', {})
+    if not invited:
+        await _edit_or_send(cb, _requests_text(), admin_requests_kb())
+        await cb.answer("Список пуст")
+        return
+    await _edit_or_send(cb, f"✉️ <b>Приглашённые</b> ({len(invited)}) — ждут первого входа:", invitelist_kb())
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("uninvite_"))
+async def cb_uninvite(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uname = cb.data.replace("uninvite_", "")
+    remove_invited(uname)
+    invited = load_admins().get('invited', {})
+    if invited:
+        await _edit_or_send(cb, f"Убран.\n\n✉️ <b>Приглашённые</b> ({len(invited)}):", invitelist_kb())
+    else:
+        await _edit_or_send(cb, "Убран. Приглашённых больше нет.\n\n" + _requests_text(), admin_requests_kb())
+    await cb.answer("Убран")
 
 @dp.callback_query(F.data == "remove_admin")
 async def cb_remove_admin(cb: CallbackQuery):
