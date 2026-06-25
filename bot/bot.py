@@ -366,6 +366,14 @@ def add_pending(user_id: int, username: str, full_name: str):
         }
         save_admins(data)
 
+def remove_pending(user_id) -> bool:
+    """Тихо убирает запрос из pending. True, если что-то удалили."""
+    data = load_admins()
+    removed = data.get('pending', {}).pop(str(user_id), None) is not None
+    if removed:
+        save_admins(data)
+    return removed
+
 
 # === FSM States ===
 
@@ -427,9 +435,14 @@ def pending_keyboard() -> InlineKeyboardMarkup:
         username = info.get('username')
         full_name = info.get('full_name') or uid
         label = "@" + username if username else full_name
+        when = info.get('requested_at', '')
         buttons.append([InlineKeyboardButton(
-            text=label + " (" + info.get('requested_at', '') + ")",
+            text="✅ " + label + (" (" + when + ")" if when else ""),
             callback_data="approve_admin_" + uid
+        )])
+        buttons.append([InlineKeyboardButton(
+            text="🚫 Отклонить " + label,
+            callback_data="reject_pending_" + uid
         )])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -646,9 +659,10 @@ async def cmd_start(message: Message, state: FSMContext):
         username = message.from_user.username
         name = message.from_user.full_name
         label = "@" + username if username else name
-        approve_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(user_id))]
-        ])
+        approve_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(user_id)),
+            InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(user_id)),
+        ]])
         await bot.send_message(
             SUPER_ADMIN_ID,
             "🔔 Новый запрос доступа:\n" + label + " (ID: " + str(user_id) + ")",
@@ -694,9 +708,10 @@ async def cb_request_access(cb: CallbackQuery):
     username = cb.from_user.username
     name = cb.from_user.full_name
     label = "@" + username if username else name
-    approve_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(cb.from_user.id))]
-    ])
+    approve_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Дать доступ", callback_data="approve_admin_" + str(cb.from_user.id)),
+        InlineKeyboardButton(text="🚫 Отклонить", callback_data="reject_pending_" + str(cb.from_user.id)),
+    ]])
     await bot.send_message(
         SUPER_ADMIN_ID,
         "🔔 Повторный запрос доступа:\n" + label + " (ID: " + str(cb.from_user.id) + ")",
@@ -1006,6 +1021,20 @@ async def cb_approve_admin(cb: CallbackQuery):
         pass
 
     await cb.answer()
+
+@dp.callback_query(F.data.startswith("reject_pending_"))
+async def cb_reject_pending(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = cb.data.replace("reject_pending_", "")
+    remove_pending(uid)  # тихо, без уведомления заявителю
+    kb = pending_keyboard()
+    if kb is None:
+        await _edit_or_send(cb, "Запрос отклонён. Других запросов нет.", main_keyboard(cb.from_user.id))
+    else:
+        await _edit_or_send(cb, "Запрос отклонён. Остальные запросы:", kb)
+    await cb.answer("Отклонён")
 
 @dp.callback_query(F.data == "remove_admin")
 async def cb_remove_admin(cb: CallbackQuery):
