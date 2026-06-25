@@ -1537,9 +1537,23 @@ async def cb_bkint(cb: CallbackQuery):
     await cb.answer("Авто-бэкап: " + telmgr._format_interval(iv))
 
 
+async def setup_bot_commands():
+    """Команды в меню по областям: всем — только /start; суперадмину в личке —
+    + /backup и /backup_auto (чтобы люди без доступа их не видели)."""
+    from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+    start_only = [BotCommand(command="start", description="Запустить бота")]
+    super_cmds = start_only + [
+        BotCommand(command="backup", description="Создать бэкап всех серверов сейчас"),
+        BotCommand(command="backup_auto", description="Расписание авто-бэкапов"),
+    ]
+    try:
+        await bot.set_my_commands(start_only, scope=BotCommandScopeDefault())
+        await bot.set_my_commands(super_cmds, scope=BotCommandScopeChat(chat_id=SUPER_ADMIN_ID))
+    except Exception as e:
+        print(f"set_my_commands failed: {e}")
+
 async def main():
     import signal as _signal
-    from aiogram.types import BotCommand
     overdue = await load_scheduled_jobs()
     scheduler.start()
     for name, admin_id, server_id in overdue:
@@ -1550,14 +1564,7 @@ async def main():
         loop.add_signal_handler(_signal.SIGHUP, apply_backup_schedule)
     except (NotImplementedError, AttributeError):
         pass
-    try:
-        await bot.set_my_commands([
-            BotCommand(command="start", description="Запустить бота"),
-            BotCommand(command="backup", description="Создать бэкап всех серверов сейчас"),
-            BotCommand(command="backup_auto", description="Расписание авто-бэкапов"),
-        ])
-    except Exception as e:
-        print(f"set_my_commands failed: {e}")
+    await setup_bot_commands()
     print("Бот запущен...")
     await dp.start_polling(bot)
 
