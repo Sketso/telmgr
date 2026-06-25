@@ -20,6 +20,18 @@ TELMGR_BRANCH="${TELMGR_BRANCH:-master}"
 # === Root? ===
 [[ $EUID -ne 0 ]] && err "Run as root: sudo bash install.sh"
 
+# === apt helper: refresh package lists once, then install ===
+APT_UPDATED=false
+export DEBIAN_FRONTEND=noninteractive   # не зависать на интерактивных промптах apt (needrestart/grub)
+apt_install() {
+    if ! $APT_UPDATED; then
+        info "Updating package lists..."
+        apt-get update -q || warn "apt-get update failed — trying to install anyway"
+        APT_UPDATED=true
+    fi
+    apt-get install -y -q "$@"
+}
+
 # === Check existing installation ===
 if command -v telmgr &>/dev/null; then
     echo -e "${YELLOW}telmgr is already installed.${RESET}"
@@ -58,6 +70,13 @@ if command -v telmgr &>/dev/null; then
     fi
 fi
 
+# === curl (used to install Docker and fetch telmgr/bot.py) ===
+if ! command -v curl &>/dev/null; then
+    info "Installing curl..."
+    apt_install curl
+    ok "curl installed"
+fi
+
 # === Docker ===
 if command -v docker &>/dev/null; then
     ok "Docker already installed"
@@ -67,26 +86,40 @@ else
     ok "Docker installed"
 fi
 
+# === Docker Compose v2 plugin ===
+if ! docker compose version &>/dev/null; then
+    warn "Docker Compose plugin not found — installing..."
+    apt_install docker-compose-plugin || err "Could not install docker-compose-plugin. Install Docker Compose v2 and re-run."
+    ok "Docker Compose plugin installed"
+fi
+
 # === Python3 ===
 if command -v python3 &>/dev/null; then
     ok "Python3 found"
 else
     info "Installing Python3..."
-    apt-get install -y python3 -q
+    apt_install python3
     ok "Python3 installed"
 fi
 
 # === pip3 ===
 if ! command -v pip3 &>/dev/null; then
     info "Installing python3-pip..."
-    apt-get install -y python3-pip -q
+    apt_install python3-pip
     ok "python3-pip installed"
+fi
+
+# === openssl (secrets + node TLS cert) ===
+if ! command -v openssl &>/dev/null; then
+    info "Installing openssl..."
+    apt_install openssl
+    ok "openssl installed"
 fi
 
 # === dnsutils ===
 if ! command -v dig &>/dev/null; then
     info "Installing dnsutils..."
-    apt-get install -y dnsutils -q
+    apt_install dnsutils
     ok "dnsutils installed"
 fi
 
@@ -349,7 +382,7 @@ $TELEMT_SERVICE
     env_file:
       - .env
     command: >
-      sh -c "pip install aiogram python-dotenv apscheduler --quiet &&
+      sh -c "pip install aiogram==3.26.0 python-dotenv apscheduler --quiet &&
              python3 bot.py"
     logging:
       driver: json-file
@@ -358,6 +391,26 @@ $TELEMT_SERVICE
         max-file: "3"
 EOF
 elif $BOT_SLAVE; then
+    # Self-signed TLS cert for the node API (encrypts master<->node, pinned by fingerprint)
+    CERT_FP=""
+    if [[ "$TELEMT_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        SAN="subjectAltName=IP:$TELEMT_HOST"
+    else
+        SAN="subjectAltName=DNS:$TELEMT_HOST"
+    fi
+    CERT_VOL=""
+    if openssl req -x509 -newkey rsa:2048 -nodes \
+         -keyout "$TELEMT_DIR/.telmgr-api.key" -out "$TELEMT_DIR/.telmgr-api.crt" \
+         -days 3650 -subj "/CN=telmgr-api" -addext "$SAN" >/dev/null 2>&1; then
+        chmod 644 "$TELEMT_DIR/.telmgr-api.key"
+        CERT_FP=$(openssl x509 -in "$TELEMT_DIR/.telmgr-api.crt" -noout -fingerprint -sha256 \
+                  | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z')
+        CERT_VOL=$'      - ./.telmgr-api.crt:/app/data/.telmgr-api.crt:ro\n      - ./.telmgr-api.key:/app/data/.telmgr-api.key:ro'
+        ok "TLS cert for node API generated"
+    else
+        warn "Could not generate TLS cert — node API will run over plain HTTP"
+    fi
+
     # Slave: telemt + telmgr-api
     cat > "$TELEMT_DIR/docker-compose.yml" << EOF
 $TELEMT_SERVICE
@@ -371,6 +424,7 @@ $TELEMT_SERVICE
       - ./.env:/app/.env:ro
       - ./.telmgr-meta.json:/app/data/.telmgr-meta.json
       - $PROXY_CONFIG:/app/data/$(basename "$PROXY_CONFIG")
+$CERT_VOL
       - /usr/local/bin/telmgr:/usr/local/bin/telmgr.py:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -398,7 +452,11 @@ ok "docker-compose.yml created"
 curl -Ls https://raw.githubusercontent.com/Sketso/telmgr/${TELMGR_BRANCH}/telmgr -o /usr/local/bin/telmgr
 chmod +x /usr/local/bin/telmgr
 cp /usr/local/bin/telmgr /usr/local/bin/telmgr.py
-pip3 install python-dotenv --break-system-packages -q
+# python-dotenv удобен, но не обязателен: у telmgr есть встроенный парсер .env,
+# поэтому установку делаем нефатальной и совместимой со старым pip.
+pip3 install python-dotenv --break-system-packages -q 2>/dev/null \
+    || pip3 install python-dotenv -q 2>/dev/null \
+    || warn "python-dotenv не установлен — telmgr будет читать .env встроенным парсером"
 ok "telmgr installed to /usr/local/bin"
 
 # === First user metadata ===
@@ -476,7 +534,7 @@ SETUP_UFW=${SETUP_UFW:-Y}
 if [[ "$SETUP_UFW" =~ ^[Yy]$ ]]; then
     if ! command -v ufw &>/dev/null; then
         info "Installing UFW..."
-        apt-get install -y ufw -q
+        apt_install ufw
         ok "UFW installed"
     fi
     ufw default deny incoming
@@ -498,7 +556,7 @@ SETUP_F2B=${SETUP_F2B:-Y}
 if [[ "$SETUP_F2B" =~ ^[Yy]$ ]]; then
     if ! command -v fail2ban-client &>/dev/null; then
         info "Installing fail2ban..."
-        apt-get install -y fail2ban -q
+        apt_install fail2ban
         ok "fail2ban installed"
     fi
     cat > /etc/fail2ban/jail.local << 'EOF'
@@ -519,7 +577,7 @@ EOF
 fi
 
 # === Summary ===
-DOMAIN_HEX=$(echo -n "$TELEMT_HOST" | xxd -p)
+DOMAIN_HEX=$(python3 -c "import sys; print(sys.argv[1].encode().hex())" "$TELEMT_HOST")
 LINK="tg://proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
 
 echo ""
@@ -528,12 +586,24 @@ echo -e "User:  ${CYAN}$FIRST_USER${RESET}"
 echo -e "Link:  ${CYAN}$LINK${RESET}"
 echo ""
 if $BOT_SLAVE; then
+    if [[ -n "$CERT_FP" ]]; then
+        SCHEME="https"; TOKEN="${TELMGR_API_KEY}:${CERT_FP}"
+    else
+        SCHEME="http"; TOKEN="$TELMGR_API_KEY"
+    fi
     echo -e "${BOLD}=== Slave server: registration ===${RESET}"
     echo -e "API port:  ${CYAN}$TELMGR_API_PORT${RESET}"
-    echo -e "API key:   ${CYAN}$TELMGR_API_KEY${RESET}"
+    if [[ -n "$CERT_FP" ]]; then
+        echo -e "Security:  ${GREEN}HTTPS + cert pinning${RESET}"
+    fi
     echo ""
     echo -e "On the master server run:"
-    echo -e "  ${BOLD}telmgr server add \"Name\" http://$TELEMT_HOST:$TELMGR_API_PORT $TELMGR_API_KEY${RESET}"
+    echo -e "  ${BOLD}telmgr server add \"Name\" $SCHEME://$TELEMT_HOST:$TELMGR_API_PORT $TOKEN${RESET}"
+    echo ""
+    warn "Open port $TELMGR_API_PORT/tcp in the firewall if needed (ideally only from the master's IP)."
+    if [[ -z "$CERT_FP" ]]; then
+        warn "API is plain HTTP — key and user secrets travel unencrypted. Restrict the port to the master's IP."
+    fi
     echo ""
 fi
 echo -e "Manage: ${BOLD}telmgr --help${RESET}"

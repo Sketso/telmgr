@@ -5,7 +5,7 @@ import os
 import sys
 import re
 import json
-from datetime import datetime, timedelta, timedelta as _td
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -33,8 +33,6 @@ assert spec is not None, "telmgr не найден в /usr/local/bin/telmgr.py"
 telmgr = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(telmgr)
-
-import urllib.request, urllib.error
 
 # === Server clients ===
 
@@ -72,39 +70,40 @@ class LocalServerClient:
     async def add_user(self, name: str, days: int, admin_id: int, admin_name: str, admin_username: str) -> dict:
         loop = asyncio.get_event_loop()
         def _sync():
-            content = telmgr.read_toml()
-            users = telmgr.get_users_from_toml(content)
-            if name in users:
-                raise ValueError(f"Юзер '{name}' уже существует")
-            secret = telmgr.generate_secret()
-            lines = content.splitlines()
-            result_lines, inserted = [], False
-            for line in lines:
-                result_lines.append(line)
-                if line.strip() == "[access.users]" and not inserted:
-                    result_lines.append(f'{name} = "{secret}"')
-                    inserted = True
-            if not inserted:
-                raise ValueError("Секция [access.users] не найдена")
-            telmgr.write_toml("\n".join(result_lines))
-            expires = None
-            if days > 0:
-                expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            meta = telmgr.load_meta()
-            meta[name] = {
-                "secret": secret,
-                "created": datetime.now().strftime("%Y-%m-%d"),
-                "expires": expires,
-                "disabled": False,
-                "admin_id": admin_id,
-                "admin_name": admin_name,
-                "admin_username": admin_username,
-            }
-            telmgr.save_meta(meta)
-            if expires:
-                telmgr.add_cron(name, expires)
-            telmgr.reload_proxy()
-            return {"link": telmgr.build_link(secret), "expires": expires}
+            with telmgr.config_lock():
+                content = telmgr.read_toml()
+                users = telmgr.get_users_from_toml(content)
+                if name in users:
+                    raise ValueError(f"Юзер '{name}' уже существует")
+                secret = telmgr.generate_secret()
+                lines = content.splitlines()
+                result_lines, inserted = [], False
+                for line in lines:
+                    result_lines.append(line)
+                    if line.strip() == "[access.users]" and not inserted:
+                        result_lines.append(f'{name} = "{secret}"')
+                        inserted = True
+                if not inserted:
+                    raise ValueError("Секция [access.users] не найдена")
+                telmgr.write_toml("\n".join(result_lines))
+                expires = None
+                if days > 0:
+                    expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+                meta = telmgr.load_meta()
+                meta[name] = {
+                    "secret": secret,
+                    "created": datetime.now().strftime("%Y-%m-%d"),
+                    "expires": expires,
+                    "disabled": False,
+                    "admin_id": admin_id,
+                    "admin_name": admin_name,
+                    "admin_username": admin_username,
+                }
+                telmgr.save_meta(meta)
+                if expires:
+                    telmgr.add_cron(name, expires)
+                telmgr.reload_proxy()
+                return {"link": telmgr.build_link(secret), "expires": expires}
         return await loop.run_in_executor(None, _sync)
 
     async def delete_user(self, name: str):
@@ -155,25 +154,12 @@ class RemoteServerClient:
         self.port = info.get("port", "")
         self._base = info["url"].rstrip("/")
         self._key = info["api_key"]
+        self._fp = info.get("cert_fp")
 
     def _request(self, method: str, path: str, body: dict = None) -> dict:
-        url = f"{self._base}{path}"
-        data = json.dumps(body).encode() if body else None
-        req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("Authorization", f"Bearer {self._key}")
-        req.add_header("Content-Type", "application/json")
+        # pinned HTTPS (или legacy http) — единая реализация в telmgr
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read())
-                if "error" in result:
-                    raise ValueError(result["error"])
-                return result
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = json.loads(e.read())
-                raise ValueError(err_body.get("error", str(e)))
-            except (json.JSONDecodeError, AttributeError):
-                raise ValueError(str(e))
+            return telmgr._api_request(self._base, self._key, method, path, body=body, cert_fp=self._fp)
         except ValueError:
             raise
         except Exception as e:
@@ -258,40 +244,68 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
 # === Scheduler ===
-async def disable_user_job(name: str, admin_id: int):
+def _disable_job_id(server_id: str, name: str) -> str:
+    return "disable_" + server_id + "_" + name
+
+def client_for_server(server_id: str):
+    """Возвращает клиента для конкретного сервера (а не для контекста юзера)."""
+    cfg = load_servers_config()
+    info_data = cfg.get("servers", {}).get(server_id)
+    if info_data is None:
+        return None
+    if info_data.get("url") == "local":
+        return LocalServerClient(info_data)
+    return RemoteServerClient(info_data)
+
+async def disable_user_job(name: str, admin_id: int, server_id: str = "local"):
     try:
-        telmgr.cmd_disable(name)
-        await bot.send_message(admin_id, "⏰ Лимит истёк — юзер <b>" + name + "</b> отключён", parse_mode="HTML")
+        client = client_for_server(server_id)
+        if client is None:
+            raise ValueError("сервер '" + server_id + "' не найден в реестре")
+        await client.disable_user(name)
+        try:
+            await bot.send_message(admin_id, "⏰ Лимит истёк — юзер <b>" + name + "</b> отключён", parse_mode="HTML")
+        except Exception:
+            pass
     except Exception as e:
         try:
             await bot.send_message(SUPER_ADMIN_ID, "❌ Ошибка при автоотключении юзера " + name + ": " + str(e))
         except Exception:
             pass
 
-def schedule_user_disable(name: str, expires: str, admin_id: int):
+def schedule_user_disable(name: str, expires: str, admin_id: int, server_id: str = "local"):
     dt = datetime.strptime(expires, "%Y-%m-%d").replace(hour=12, minute=0)
     if dt > datetime.now():
-        job_id = "disable_" + name
+        job_id = _disable_job_id(server_id, name)
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
         scheduler.add_job(
             disable_user_job,
             trigger=DateTrigger(run_date=dt),
-            args=[name, admin_id],
+            args=[name, admin_id, server_id],
             id=job_id
         )
 
-def load_scheduled_jobs() -> list:
-    meta = telmgr.load_meta()
+async def load_scheduled_jobs() -> list:
+    """Сканирует все серверы (а не только локальный) и планирует авто-отключения.
+    Возвращает список (name, admin_id, server_id) уже просроченных юзеров."""
+    cfg = load_servers_config()
     overdue = []
-    for name, data in meta.items():
-        if data.get('expires') and not data.get('disabled'):
-            admin_id = data.get('admin_id') or SUPER_ADMIN_ID
-            dt = datetime.strptime(data['expires'], "%Y-%m-%d").replace(hour=12, minute=0)
-            if dt <= datetime.now():
-                overdue.append((name, admin_id))
-            else:
-                schedule_user_disable(name, data['expires'], admin_id)
+    for sid, info_data in cfg.get("servers", {}).items():
+        try:
+            client = LocalServerClient(info_data) if info_data.get("url") == "local" else RemoteServerClient(info_data)
+            users = await client.get_users()
+        except Exception:
+            # недоступный сервер пропускаем — переразберёмся при следующем рестарте/SIGHUP
+            continue
+        for name, data in users.items():
+            if data.get('expires') and not data.get('disabled'):
+                admin_id = data.get('admin_id') or SUPER_ADMIN_ID
+                dt = datetime.strptime(data['expires'], "%Y-%m-%d").replace(hour=12, minute=0)
+                if dt <= datetime.now():
+                    overdue.append((name, admin_id, sid))
+                else:
+                    schedule_user_disable(name, data['expires'], admin_id, sid)
     return overdue
 
 # === Admins storage ===
@@ -443,7 +457,7 @@ def owns_user(user_id: int, users: dict, name: str) -> bool:
         return True
     return str(users.get(name, {}).get('admin_id')) == str(user_id)
 
-def format_users(users: dict, toml_users: dict) -> str:
+def format_users(users: dict) -> str:
     if not users:
         return "Юзеров нет"
     lines = []
@@ -532,6 +546,7 @@ async def add_user_days(message: Message, state: FSMContext):
 
     data = await state.get_data()
     name = data['name']
+    server_id = get_user_server_id(message.from_user.id)
     client = get_client(message.from_user.id)
 
     try:
@@ -544,13 +559,13 @@ async def add_user_days(message: Message, state: FSMContext):
         link = result["link"]
         expires = result.get("expires")
         if expires:
-            schedule_user_disable(name, expires, message.from_user.id)
+            schedule_user_disable(name, expires, message.from_user.id, server_id)
         text = "✅ Юзер <b>" + name + "</b> добавлен\n"
         if expires:
             text += "📅 Истекает: " + expires + "\n"
         text += "🔗 <code>" + link + "</code>"
         await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await message.answer("❌ Ошибка: " + str(e))
 
     await state.clear()
@@ -578,7 +593,7 @@ async def delete_user_name(message: Message, state: FSMContext):
         await client.delete_user(name)
         await message.answer("✅ Юзер <b>" + name + "</b> удалён", parse_mode="HTML",
                              reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -616,7 +631,7 @@ async def toggle_user_name(message: Message, state: FSMContext):
             await client.disable_user(name)
             await message.answer("⏸ Юзер <b>" + name + "</b> отключён", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -650,6 +665,7 @@ async def limit_user_days(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     name = data['name']
+    server_id = get_user_server_id(message.from_user.id)
     client = get_client(message.from_user.id)
     try:
         users = await client.get_users()
@@ -663,17 +679,17 @@ async def limit_user_days(message: Message, state: FSMContext):
             return
         await client.set_limit(name, days)
         if days == 0:
-            job_id = "disable_" + name
+            job_id = _disable_job_id(server_id, name)
             if scheduler.get_job(job_id):
                 scheduler.remove_job(job_id)
             await message.answer("✅ Лимит для <b>" + name + "</b> снят", parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
         else:
             expires = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-            schedule_user_disable(name, expires, message.from_user.id)
+            schedule_user_disable(name, expires, message.from_user.id, server_id)
             await message.answer("✅ Лимит для <b>" + name + "</b>: до " + expires, parse_mode="HTML",
                                  reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         error_msg = str(e)
         await message.answer("❌ Ошибка: " + error_msg)
         if "откат" in error_msg.lower() or "невалидный" in error_msg.lower():
@@ -706,7 +722,7 @@ async def link_user_name(message: Message, state: FSMContext):
         else:
             await message.answer("🔗 <code>" + link + "</code>",
                                  parse_mode="HTML", reply_markup=main_keyboard(message.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await message.answer("❌ Ошибка: " + str(e))
     await state.clear()
 
@@ -715,10 +731,10 @@ async def cb_my_users(cb: CallbackQuery):
     client = get_client(cb.from_user.id)
     try:
         all_users = await client.get_users()
-        my = {k: v for k, v in all_users.items() if v.get('admin_id') == cb.from_user.id}
-        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my, my)
+        my = {k: v for k, v in all_users.items() if str(v.get('admin_id')) == str(cb.from_user.id)}
+        text = "👥 <b>Твои юзеры:</b>\n\n" + format_users(my)
         await cb.message.answer(text, parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
@@ -747,7 +763,7 @@ async def cb_expiring_users(cb: CallbackQuery):
             emoji = "🔥" if diff <= 1 else "⚠️"
             lines.append(emoji + " " + status + " <b>" + name + "</b> — " + expires + " (через " + str(diff) + " дн.)")
         await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
@@ -784,7 +800,7 @@ async def cb_all_users(cb: CallbackQuery):
                 lines.append("  " + status + " <b>" + name + "</b> — до " + expires)
             lines.append("")
         await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_keyboard(cb.from_user.id))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         await cb.message.answer("❌ Ошибка: " + str(e))
     await cb.answer()
 
@@ -972,7 +988,7 @@ async def add_server_url(message: Message, state: FSMContext):
         await message.answer("❌ URL должен начинаться с http:// или https://")
         return
     await state.update_data(url=url)
-    await message.answer("Введи API ключ сервера:")
+    await message.answer("Введи токен ноды (строку после URL из вывода установки — вида <code>ключ:отпечаток</code>):", parse_mode="HTML")
     await state.set_state(AddServer.waiting_key)
 
 @dp.message(AddServer.waiting_key)
@@ -981,22 +997,24 @@ async def add_server_key(message: Message, state: FSMContext):
     data = await state.get_data()
     name = data["name"]
     url = data["url"]
-    api_key = message.text.strip()
-    test_client = RemoteServerClient({"name": name, "url": url, "api_key": api_key, "host": "", "port": ""})
+    token = message.text.strip()
+    api_key, cert_fp = telmgr._parse_api_token(token)
+    test_client = RemoteServerClient({"name": name, "url": url, "api_key": api_key, "cert_fp": cert_fp, "host": "", "port": ""})
     try:
         status = await test_client._req("GET", "/status")
         host = status.get("host", "")
         port = str(status.get("port", ""))
     except ValueError as e:
-        await message.answer("❌ Не могу подключиться: " + str(e) + "\nПроверь URL и ключ.")
+        await message.answer("❌ Не могу подключиться: " + str(e) + "\nПроверь URL и токен.")
         await state.clear()
         return
     cfg = load_servers_config()
     sid = _secrets.token_hex(4)
-    cfg["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "host": host, "port": port}
+    cfg["servers"][sid] = {"name": name, "url": url, "api_key": api_key, "cert_fp": cert_fp, "host": host, "port": port}
     save_servers_config(cfg)
+    tls_note = "\n🔒 TLS-отпечаток подтверждён" if cert_fp else "\n⚠️ plain HTTP без шифрования"
     await message.answer(
-        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port,
+        "✅ Сервер <b>" + name + "</b> добавлен!\nХост: " + host + ":" + port + tls_note,
         parse_mode="HTML",
         reply_markup=main_keyboard(message.from_user.id)
     )
@@ -1125,10 +1143,10 @@ async def backup_auto_cmd_handler(message: Message):
 async def main():
     import signal as _signal
     from aiogram.types import BotCommand
-    overdue = load_scheduled_jobs()
+    overdue = await load_scheduled_jobs()
     scheduler.start()
-    for name, admin_id in overdue:
-        asyncio.create_task(disable_user_job(name, admin_id))
+    for name, admin_id, server_id in overdue:
+        asyncio.create_task(disable_user_job(name, admin_id, server_id))
     apply_backup_schedule()
     try:
         loop = asyncio.get_running_loop()

@@ -146,10 +146,12 @@ telmgr update
 telmgr bot setup   # choose slave → get the API key and registration command
 ```
 
-On the master, register the new server:
+On the master, register the new server using the exact command printed by the slave setup:
 ```bash
-telmgr server add "Name" http://<IP>:8765 <API_KEY>
+telmgr server add "Name" https://<IP>:8765 <API_KEY>:<CERT_FINGERPRINT>
 ```
+
+The node API is served over **HTTPS with a self-signed certificate**, and the master **pins the certificate fingerprint** (carried inside the registration token you copy by hand). This encrypts the master↔node channel and blocks man-in-the-middle attacks — with no domains, Let's Encrypt, or manual certificate handling. It's set up automatically; just copy the printed command. (Legacy `http://<IP>:8765 <API_KEY>` without a fingerprint is still accepted but unencrypted.)
 
 Once added, a server selector button appears in the bot. The admin list is shared across all servers. When `/backup` is triggered, the master bot collects backups from all registered servers automatically.
 
