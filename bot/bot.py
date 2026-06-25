@@ -564,28 +564,31 @@ async def _render_user_list(cb: CallbackQuery, scope: str, page: int = 0):
     await _edit_or_send(cb, _list_title(scope, len(users)),
                         users_list_kb(users, scope, page, with_owner))
 
-def user_card_text(name: str, data: dict) -> str:
+def user_card_text(name: str, data: dict, link: str = None) -> str:
     status = "🔴 отключён" if data.get('disabled') else "🟢 активен"
     created = data.get('created') or "—"
     expires = data.get('expires') or "∞"
     owner = data.get('admin_username')
     owner = ("@" + owner) if owner else (data.get('admin_name') or data.get('admin_id') or "CLI")
-    return (
+    text = (
         f"👤 <b>{esc(name)}</b>\n"
         f"Статус: {status}\n"
         f"Создан: {esc(created)}\n"
         f"Истекает: {esc(expires)}\n"
         f"Владелец: {esc(owner)}"
     )
+    if link:
+        # <code> делает ссылку тап-копируемой прямо в карточке
+        text += f"\n\n🔗 <code>{esc(link)}</code>\n<i>(нажми на ссылку, чтобы скопировать)</i>"
+    else:
+        text += "\n\n🔗 <i>ссылка недоступна</i>"
+    return text
 
 def user_card_kb(name: str, data: dict) -> InlineKeyboardMarkup:
     toggle = ("▶️ Включить", "utog:" + name) if data.get('disabled') else ("⏸ Отключить", "utog:" + name)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle[0], callback_data=toggle[1])],
-        [
-            InlineKeyboardButton(text="⏱ Лимит", callback_data="ulim:" + name),
-            InlineKeyboardButton(text="🔗 Ссылка", callback_data="ulink:" + name),
-        ],
+        [InlineKeyboardButton(text="⏱ Лимит", callback_data="ulim:" + name)],
         [InlineKeyboardButton(text="🗑 Удалить", callback_data="udel:" + name)],
         [
             InlineKeyboardButton(text="⬅️ К списку", callback_data="ulist"),
@@ -621,8 +624,14 @@ async def _load_owned(cb: CallbackQuery, name: str):
         return None, None
     return client, users
 
-async def _show_card(cb: CallbackQuery, name: str, users: dict):
-    await _edit_or_send(cb, user_card_text(name, users[name]), user_card_kb(name, users[name]))
+async def _show_card(cb: CallbackQuery, name: str, users: dict, client=None):
+    link = None
+    try:
+        c = client or get_client(cb.from_user.id)
+        link = await c.get_link(name)
+    except Exception:
+        pass
+    await _edit_or_send(cb, user_card_text(name, users[name], link), user_card_kb(name, users[name]))
 
 
 # === Handlers ===
@@ -828,7 +837,7 @@ async def cb_user_card(cb: CallbackQuery):
     client, users = await _load_owned(cb, name)
     if not client:
         return
-    await _show_card(cb, name, users)
+    await _show_card(cb, name, users, client)
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("utog:"))
@@ -843,24 +852,10 @@ async def cb_user_toggle(cb: CallbackQuery):
         else:
             await client.disable_user(name)
         users = await client.get_users()
-        await _show_card(cb, name, users)
+        await _show_card(cb, name, users, client)
         await cb.answer("Готово")
     except Exception as e:
         await _notify_if_corrupt(e)
-        await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
-
-@dp.callback_query(F.data.startswith("ulink:"))
-async def cb_user_link(cb: CallbackQuery):
-    name = cb.data.split(":", 1)[1]
-    client, users = await _load_owned(cb, name)
-    if not client:
-        return
-    try:
-        link = await client.get_link(name)
-        warn = "⚠️ Юзер отключён, но ссылка:\n" if users[name]['disabled'] else ""
-        await cb.message.answer(warn + "🔗 <code>" + esc(link) + "</code>", parse_mode="HTML")
-        await cb.answer()
-    except Exception as e:
         await cb.answer("Ошибка: " + str(e)[:180], show_alert=True)
 
 @dp.callback_query(F.data.startswith("udelyes:"))
@@ -923,7 +918,7 @@ async def cb_user_set_limit(cb: CallbackQuery):
     try:
         await _apply_limit(cb, name, int(days))
         users = await client.get_users()
-        await _show_card(cb, name, users)
+        await _show_card(cb, name, users, client)
         await cb.answer("Лимит обновлён")
     except Exception as e:
         await _notify_if_corrupt(e)
