@@ -133,6 +133,10 @@ class LocalServerClient:
             return telmgr.build_link(users[name]["secret"])
         return await loop.run_in_executor(None, _sync)
 
+    async def get_status(self) -> dict:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, telmgr.local_status)
+
     async def get_backup(self) -> tuple:
         """Создать бэкап локально и вернуть (bytes, filename)."""
         import io, contextlib
@@ -194,6 +198,9 @@ class RemoteServerClient:
     async def get_link(self, name: str) -> str:
         data = await self._req("GET", f"/users/{name}/link")
         return data["link"]
+
+    async def get_status(self) -> dict:
+        return await self._req("GET", "/status")
 
     async def get_backup(self) -> tuple:
         import base64
@@ -392,6 +399,10 @@ def main_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
     if is_super_admin(user_id):
         buttons.append([InlineKeyboardButton(text="👑 Все юзеры", callback_data="all_users")])
+        buttons.append([
+            InlineKeyboardButton(text="📊 Статус", callback_data="status"),
+            InlineKeyboardButton(text="📦 Бэкапы", callback_data="backups"),
+        ])
         buttons.append([
             InlineKeyboardButton(text="➕ Добавить админа", callback_data="add_admin"),
             InlineKeyboardButton(text="➖ Удалить админа", callback_data="remove_admin"),
@@ -1277,6 +1288,123 @@ async def backup_auto_cmd_handler(message: Message):
         await message.answer(f"🔄 Авто-бэкап включён: {telmgr._format_interval(new_interval)}")
     else:
         await message.answer("Использование: <code>/backup_auto [on N{h|d|w|m} | off]</code>", parse_mode="HTML")
+
+
+# === Меню: Статус и Бэкапы (кнопками) ===
+
+def _fmt_uptime(secs) -> str:
+    total = int(secs or 0)
+    h, rem = divmod(total, 3600)
+    m = rem // 60
+    if h >= 24:
+        d, h = divmod(h, 24)
+        return f"{d}д {h}ч {m}м"
+    return f"{h}ч {m}м"
+
+@dp.callback_query(F.data == "status")
+async def cb_status(cb: CallbackQuery, state: FSMContext):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer("Собираю статус…")
+    cfg = load_servers_config()
+    lines = ["📊 <b>Статус</b>\n"]
+    for sid, info_data in cfg.get("servers", {}).items():
+        srv = info_data.get("name") or sid
+        try:
+            client = LocalServerClient(info_data) if info_data.get("url") == "local" else RemoteServerClient(info_data)
+            st = await client.get_status()
+            emoji = "🟢" if st.get("proxy_status") == "running" else "🔴"
+            lines.append(
+                f"{emoji} <b>{esc(srv)}</b> — {esc(st.get('proxy_status', '?'))}\n"
+                f"   {esc(st.get('host', ''))}:{esc(st.get('port', ''))} · аптайм {_fmt_uptime(st.get('uptime_seconds'))}\n"
+                f"   юзеры: {st.get('users_active', 0)} 🟢 / {st.get('users_disabled', 0)} 🔴"
+            )
+        except Exception as e:
+            lines.append(f"⚠️ <b>{esc(srv)}</b> — недоступен: {esc(str(e)[:80])}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="status"),
+        InlineKeyboardButton(text="🏠 Меню", callback_data="umenu"),
+    ]])
+    await _edit_or_send(cb, "\n".join(lines), kb)
+
+def backups_text() -> str:
+    s = telmgr._load_backup_schedule()
+    if s.get("enabled"):
+        body = "Авто-бэкап: <b>включён</b>, " + telmgr._format_interval(s.get("interval", "1d"))
+    else:
+        body = "Авто-бэкап: <b>отключён</b>"
+    return "📦 <b>Бэкапы</b>\n\n" + body + "\nФайлы приходят суперадмину в этот чат."
+
+def backups_kb() -> InlineKeyboardMarkup:
+    s = telmgr._load_backup_schedule()
+    rows = [[InlineKeyboardButton(text="📦 Сделать бэкап сейчас", callback_data="bkrun")]]
+    if s.get("enabled"):
+        rows.append([InlineKeyboardButton(text="⏸ Выключить авто-бэкап", callback_data="bkauto_off")])
+    else:
+        rows.append([InlineKeyboardButton(text="▶️ Включить авто-бэкап", callback_data="bkauto_on")])
+    rows.append([
+        InlineKeyboardButton(text="каждый день", callback_data="bkint:1d"),
+        InlineKeyboardButton(text="раз в неделю", callback_data="bkint:7d"),
+        InlineKeyboardButton(text="раз в месяц", callback_data="bkint:30d"),
+    ])
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="umenu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+@dp.callback_query(F.data == "backups")
+async def cb_backups(cb: CallbackQuery, state: FSMContext):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await _edit_or_send(cb, backups_text(), backups_kb())
+    await cb.answer()
+
+@dp.callback_query(F.data == "bkrun")
+async def cb_backup_run(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await cb.answer("Собираю бэкапы со всех серверов…")
+    await run_backup_all()
+    await cb.message.answer("✅ Готово.", reply_markup=main_keyboard(cb.from_user.id))
+
+@dp.callback_query(F.data == "bkauto_on")
+async def cb_bkauto_on(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    s = telmgr._load_backup_schedule()
+    telmgr._save_backup_schedule({"enabled": True, "interval": s.get("interval", "1d")})
+    apply_backup_schedule()
+    await _edit_or_send(cb, backups_text(), backups_kb())
+    await cb.answer("Авто-бэкап включён")
+
+@dp.callback_query(F.data == "bkauto_off")
+async def cb_bkauto_off(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    s = telmgr._load_backup_schedule()
+    telmgr._save_backup_schedule({"enabled": False, "interval": s.get("interval", "1d")})
+    apply_backup_schedule()
+    await _edit_or_send(cb, backups_text(), backups_kb())
+    await cb.answer("Авто-бэкап отключён")
+
+@dp.callback_query(F.data.startswith("bkint:"))
+async def cb_bkint(cb: CallbackQuery):
+    if not is_super_admin(cb.from_user.id):
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    iv = cb.data.split(":", 1)[1]
+    if not telmgr._parse_interval(iv):
+        await cb.answer("Неверный интервал", show_alert=True)
+        return
+    telmgr._save_backup_schedule({"enabled": True, "interval": iv})
+    apply_backup_schedule()
+    await _edit_or_send(cb, backups_text(), backups_kb())
+    await cb.answer("Авто-бэкап: " + telmgr._format_interval(iv))
 
 
 async def main():
