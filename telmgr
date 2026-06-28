@@ -64,6 +64,11 @@ API_KEY_PATH = os.path.join(TELEMT_DIR, ".telmgr-api.key")
 SCHEDULE_PATH = os.path.join(TELEMT_DIR, ".telmgr-backup-schedule.json")
 PUBLIC_HOST = os.environ.get("TELEMT_HOST")
 PUBLIC_PORT = os.environ.get("TELEMT_PORT", "2053")
+# SNI камуфляжного домена в ссылке (FakeTLS). По умолчанию = TELEMT_HOST.
+# Задай TELEMT_SNI="белый.домен" (напр. hcaptcha.com), если свой домен флагнут DPI:
+# тогда server= остаётся TELEMT_HOST, а на проводе DPI видит белый SNI.
+# Требует, чтобы этот SNI был в [censorship] tls_domains телемта.
+PUBLIC_SNI = os.environ.get("TELEMT_SNI") or PUBLIC_HOST
 API_PORT = int(os.environ.get("TELMGR_API_PORT", "8765"))
 API_KEY = os.environ.get("TELMGR_API_KEY", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -187,7 +192,7 @@ def generate_secret():
 def build_link(secret):
     if not PUBLIC_HOST:
         err("Укажи переменную окружения TELEMT_HOST")
-    domain_hex = PUBLIC_HOST.encode().hex()
+    domain_hex = PUBLIC_SNI.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
     return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
 

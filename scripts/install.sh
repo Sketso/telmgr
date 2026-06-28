@@ -223,6 +223,11 @@ TELEMT_HOST=$TELEMT_HOST
 TELEMT_PORT=$TELEMT_PORT
 TELEMT_DIR=$TELEMT_DIR
 PROXY_ENGINE=$PROXY_ENGINE
+# Optional: camouflage SNI for proxy links (FakeTLS). Defaults to TELEMT_HOST.
+# Set to a "white"/unblocked domain (e.g. hcaptcha.com) if your own domain is
+# DPI-flagged; server= stays TELEMT_HOST, only the on-wire SNI changes.
+# The value must also be listed in telemt.toml [censorship] tls_domains.
+#TELEMT_SNI=
 EOF
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     cat >> "$TELEMT_DIR/.env" << EOF
