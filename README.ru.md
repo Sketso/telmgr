@@ -90,6 +90,9 @@ telmgr bot logs [lines]            # логи Telegram бота (default: 50)
 telmgr status                      # статус сервиса, бота и статистика
 telmgr logs [lines]                # логи контейнера прокси (default: 50)
 telmgr restart                     # перезапустить прокси
+telmgr sni                         # показать маскировочный SNI (FakeTLS-домен в ссылках)
+telmgr sni <домен>                 # сменить SNI на белый (напр. hcaptcha.com); ссылки юзеров изменятся
+telmgr sni prune                   # оставить только текущий SNI (старые ссылки перестанут работать)
 telmgr update                      # обновить telmgr и bot.py с GitHub
 telmgr coreupdate                  # обновить Docker образ прокси
 telmgr backup                      # создать локальный бэкап (tar.gz)

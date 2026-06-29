@@ -177,6 +177,14 @@ fi
 read -p "Enter proxy port [$DEFAULT_PORT]: " TELEMT_PORT
 TELEMT_PORT=$(echo "${TELEMT_PORT:-$DEFAULT_PORT}" | tr -cd '[:digit:]')
 
+# Masking SNI domain (FakeTLS camouflage). Independent from the server address:
+# server= stays $TELEMT_HOST, but DPI on the wire sees this SNI. Use a "white"/
+# unblocked domain (e.g. hcaptcha.com) if your own domain is DPI-flagged.
+# Change later anytime with: telmgr sni <domain>
+read -p "Enter masking SNI domain [$TELEMT_HOST]: " TELEMT_SNI
+TELEMT_SNI=$(echo "${TELEMT_SNI:-$TELEMT_HOST}" | tr -cd '[:alnum:].-')
+[[ -z "$TELEMT_SNI" ]] && TELEMT_SNI="$TELEMT_HOST"
+
 read -p "Enter first username [myproxy]: " FIRST_USER
 FIRST_USER=${FIRST_USER:-myproxy}
 
@@ -223,11 +231,9 @@ TELEMT_HOST=$TELEMT_HOST
 TELEMT_PORT=$TELEMT_PORT
 TELEMT_DIR=$TELEMT_DIR
 PROXY_ENGINE=$PROXY_ENGINE
-# Optional: camouflage SNI for proxy links (FakeTLS). Defaults to TELEMT_HOST.
-# Set to a "white"/unblocked domain (e.g. hcaptcha.com) if your own domain is
-# DPI-flagged; server= stays TELEMT_HOST, only the on-wire SNI changes.
-# The value must also be listed in telemt.toml [censorship] tls_domains.
-#TELEMT_SNI=
+# Masking SNI baked into proxy links (FakeTLS). server= stays TELEMT_HOST.
+# Change later with: telmgr sni <domain>
+TELEMT_SNI=$TELEMT_SNI
 EOF
 if $INSTALL_BOT_ENABLED && ! $BOT_SLAVE; then
     cat >> "$TELEMT_DIR/.env" << EOF
@@ -255,7 +261,7 @@ port = $TELEMT_PORT
 bind_addr = "0.0.0.0"
 
 [censorship]
-tls_domain = "$TELEMT_HOST"
+tls_domain = "$TELEMT_SNI"
 fast_mode = true
 drs = true
 
@@ -311,7 +317,7 @@ listen_addr_ipv4 = "0.0.0.0"
 listen_addr_ipv6 = "::"
 
 [censorship]
-tls_domain = "$TELEMT_HOST"
+tls_domain = "$TELEMT_SNI"
 mask = true
 mask_port = 443
 fake_cert_len = 2048
@@ -582,13 +588,14 @@ EOF
 fi
 
 # === Summary ===
-DOMAIN_HEX=$(python3 -c "import sys; print(sys.argv[1].encode().hex())" "$TELEMT_HOST")
+DOMAIN_HEX=$(python3 -c "import sys; print(sys.argv[1].encode().hex())" "$TELEMT_SNI")
 LINK="tg://proxy?server=${TELEMT_HOST}&port=${TELEMT_PORT}&secret=ee${SECRET}${DOMAIN_HEX}"
 
 echo ""
 echo -e "${BOLD}=== Done! ===${RESET}"
 echo -e "User:  ${CYAN}$FIRST_USER${RESET}"
 echo -e "Link:  ${CYAN}$LINK${RESET}"
+[[ "$TELEMT_SNI" != "$TELEMT_HOST" ]] && echo -e "SNI:   ${CYAN}$TELEMT_SNI${RESET} (masking)"
 echo ""
 if $BOT_SLAVE; then
     if [[ -n "$CERT_FP" ]]; then
