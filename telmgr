@@ -41,9 +41,11 @@ _env_paths = [
     "/root/telemt/.env",
     ".env"
 ]
+_loaded_env_path = None
 for _p in _env_paths:
     if os.path.exists(_p):
         load_dotenv(_p)
+        _loaded_env_path = _p
         break
 
 TELEMT_DIR = os.environ.get("TELEMT_DIR", os.path.join(os.path.expanduser("~"), "telemt"))
@@ -195,6 +197,139 @@ def build_link(secret):
     domain_hex = PUBLIC_SNI.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
     return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
+
+# === Маскировочный SNI (FakeTLS) ===
+def _set_env_var(key, value):
+    """Идемпотентно проставляет KEY=value в загруженном .env (или TELEMT_DIR/.env)."""
+    path = _loaded_env_path or os.path.join(TELEMT_DIR, ".env")
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.read().splitlines()
+    pat = re.compile(r'^\s*' + re.escape(key) + r'\s*=')
+    for i, ln in enumerate(lines):
+        if pat.match(ln):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        ins = next((i + 1 for i, ln in enumerate(lines) if ln.startswith("TELEMT_PORT=")), len(lines))
+        lines.insert(ins, f"{key}={value}")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+def _parse_censorship_snis(content):
+    """(primary, extras[]) из [censorship]: tls_domain + tls_domains."""
+    primary, extras, in_cen = None, [], False
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_cen = (s == "[censorship]")
+            continue
+        if in_cen:
+            m = re.match(r'tls_domain\s*=\s*"([^"]+)"', s)
+            if m:
+                primary = m.group(1)
+            m = re.match(r'tls_domains\s*=\s*\[(.*)\]', s)
+            if m:
+                extras = re.findall(r'"([^"]+)"', m.group(1))
+    return primary, extras
+
+def _rewrite_censorship_snis(content, primary, extras):
+    """Переписывает tls_domain (=primary) и tls_domains (=extras) в [censorship].
+    extras=[] → строка tls_domains удаляется."""
+    extras = [d for d in dict.fromkeys(extras) if d and d != primary]
+    domains_line = ("tls_domains = [" + ", ".join('"%s"' % d for d in extras) + "]") if extras else None
+    lines = content.splitlines()
+    cen_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "[censorship]"), None)
+    if cen_idx is None:
+        err("В telemt.toml нет секции [censorship]")
+    out, in_cen, set_primary, set_extras = [], False, False, False
+    def flush_extras():
+        nonlocal set_extras
+        if domains_line and not set_extras:
+            out.append(domains_line)
+            set_extras = True
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if i == cen_idx:
+            in_cen = True; out.append(ln); continue
+        if in_cen and s.startswith("[") and s != "[censorship]":
+            flush_extras(); in_cen = False; out.append(ln); continue
+        if in_cen and re.match(r'tls_domain\s*=', s):
+            out.append('tls_domain = "%s"' % primary); set_primary = True; continue
+        if in_cen and re.match(r'tls_domains\s*=', s):
+            flush_extras(); continue   # заменяем (или удаляем, если extras пуст)
+        out.append(ln)
+    if in_cen:
+        flush_extras()
+    if not set_primary:
+        err("В [censorship] не найден tls_domain — конфиг нестандартный, правьте вручную")
+    new_content = "\n".join(out)
+    if content.endswith("\n"):
+        new_content += "\n"
+    return new_content
+
+def _restart_bot_if_present():
+    try:
+        r = subprocess.run(["docker", "ps", "-a", "--filter", "name=telmgr-bot",
+                            "--format", "{{.Names}}"], capture_output=True, text=True)
+        if "telmgr-bot" in r.stdout:
+            subprocess.run(["docker", "compose", "restart", "telmgr-bot"], cwd=TELEMT_DIR, check=False)
+            return True
+    except Exception:
+        pass
+    return False
+
+@_with_config_lock
+def cmd_sni(domain=None, prune=False):
+    """Управление маскировочным SNI (FakeTLS-домен в ссылках). server= остаётся TELEMT_HOST."""
+    content = read_toml()
+    primary, extras = _parse_censorship_snis(content)
+    current = PUBLIC_SNI or PUBLIC_HOST
+
+    if not domain and not prune:
+        accepted = [d for d in ([primary] + extras) if d]
+        print(f"\n{BOLD}Маскировочный SNI (FakeTLS){RESET}")
+        print(f"  В ссылках (TELEMT_SNI): {GREEN}{current}{RESET}")
+        print(f"  server= (точка входа):  {PUBLIC_HOST}:{PUBLIC_PORT}")
+        print(f"  telemt принимает SNI:   {', '.join(accepted) or '—'}")
+        print(f"\n  Сменить:   telmgr sni <домен>   (старые ссылки ещё работают)")
+        print(f"  Зачистить: telmgr sni prune     (оставить только текущий SNI)\n")
+        return
+
+    if os.geteuid() != 0:
+        err("Запусти от root")
+
+    if prune:
+        new_primary = current or primary
+        if not new_primary:
+            err("Не задан текущий SNI — нечего зачищать")
+        warn(f"Останется только SNI «{new_primary}». Ссылки со СТАРЫМИ SNI перестанут подключаться!")
+        sys.stdout.write("Продолжить? [y/N]: "); sys.stdout.flush()
+        if sys.stdin.buffer.readline().decode("utf-8", "replace").strip().lower() != "y":
+            info("Отменено"); return
+        write_toml(_rewrite_censorship_snis(content, new_primary, []))
+        _set_env_var("TELEMT_SNI", new_primary)
+        ok(f"SNI зачищен до: {new_primary}")
+    else:
+        if "/" in domain or "." not in domain or not re.match(r'^[A-Za-z0-9.-]+$', domain):
+            err("Невалидный домен (буквы/цифры/точки/дефисы, без схемы и путей)")
+        new_extras = [d for d in extras if d != domain]
+        if primary and primary != domain and primary not in new_extras:
+            new_extras.append(primary)   # старый primary остаётся принимаемым → старые ссылки живут
+        write_toml(_rewrite_censorship_snis(content, domain, new_extras))
+        _set_env_var("TELEMT_SNI", domain)
+        ok(f"SNI для новых ссылок: {GREEN}{domain}{RESET}  (server= остаётся {PUBLIC_HOST})")
+        info(f"telemt принимает SNI: {', '.join([domain] + new_extras)}")
+        warn("ВСЕ ссылки пользователей ИЗМЕНИЛИСЬ — раздай заново (бот / 'telmgr user link <имя>').")
+        warn("Старые ссылки ещё принимаются. Когда все перейдут — почисти: telmgr sni prune")
+
+    info("Перезапуск telemt (применить SNI)...")
+    subprocess.run(["docker", "compose", "restart", PROXY_CONTAINER], cwd=TELEMT_DIR, check=False)
+    if _restart_bot_if_present():
+        info("telmgr-bot перезапущен (перечитал .env)")
+    ok("Готово. Проверь: telmgr status")
 
 # === Команды ===
 @_with_config_lock
@@ -580,6 +715,8 @@ def cmd_status():
     print(f"Статус:    {GREEN}running{RESET}" if status == "running" else f"Статус:    {RED}{status}{RESET}")
     print(f"Аптайм:    {hours}ч {minutes}м")
     print(f"Хост:      {PUBLIC_HOST}:{PUBLIC_PORT}")
+    if PUBLIC_SNI and PUBLIC_SNI != PUBLIC_HOST:
+        print(f"SNI:       {PUBLIC_SNI} {YELLOW}(маскировка){RESET}")
     print(f"Юзеры:     {GREEN}{active} active{RESET} / {RED}{disabled} disabled{RESET}")
 
     bot_result = subprocess.run(
@@ -1193,7 +1330,8 @@ def cmd_backup():
                 added.add(arc)
     ok(f"Бэкап создан: {backup_file}")
     if PUBLIC_HOST:
-        warn(f"При восстановлении на новом сервере домен и порт должны быть идентичными: {PUBLIC_HOST}:{PUBLIC_PORT}")
+        sni_note = f", SNI {PUBLIC_SNI}" if PUBLIC_SNI and PUBLIC_SNI != PUBLIC_HOST else ""
+        warn(f"При восстановлении на новом сервере домен и порт должны быть идентичными: {PUBLIC_HOST}:{PUBLIC_PORT}{sni_note}")
     else:
         warn("При восстановлении на новом сервере домен и порт должны совпадать с оригинальными!")
     warn("Иначе ссылки пользователей перестанут работать!")
@@ -1205,6 +1343,7 @@ def cmd_restore(backup_file):
         err(f"Файл не найден: {backup_file}")
     warn(f"Восстановление из {backup_file}")
     warn(f"Убедись что домен и порт сервера совпадают с оригинальными!")
+    info("Маскировочный SNI (.env TELEMT_SNI) восстанавливается из бэкапа автоматически.")
     warn("Все текущие пользователи и настройки будут ПЕРЕЗАПИСАНЫ данными из бэкапа!")
     sys.stdout.write("Продолжить? [y/N]: ")
     sys.stdout.flush()
@@ -1656,6 +1795,7 @@ def usage():
             "status":      _fmt("telmgr status",                    "Статус прокси"),
             "logs":        _fmt("telmgr logs [lines]",              "Логи контейнера telemt (default: 50)"),
             "restart":     _fmt("telmgr restart",                   "Перезапустить прокси (telemt)"),
+            "sni":         _fmt("telmgr sni [<домен>|prune]",       "Маскировочный SNI в ссылках (без аргумента — показать)"),
             "update":      _fmt("telmgr update",                    "Обновить telmgr и bot.py с GitHub"),
             "coreupdate":  _fmt("telmgr coreupdate",                "Обновить Docker образ прокси (telemt)"),
             "backup":      _fmt("telmgr backup",                    "Создать бэкап"),
@@ -1695,6 +1835,7 @@ def usage():
             "status":      _fmt("telmgr status",                    "Proxy, bot, and user status"),
             "logs":        _fmt("telmgr logs [lines]",              "telemt container logs (default: 50)"),
             "restart":     _fmt("telmgr restart",                   "Restart proxy (telemt)"),
+            "sni":         _fmt("telmgr sni [<domain>|prune]",      "Masking SNI in links (no arg — show current)"),
             "update":      _fmt("telmgr update",                    "Update telmgr and bot.py from GitHub"),
             "coreupdate":  _fmt("telmgr coreupdate",                "Update telemt Docker image"),
             "backup":      _fmt("telmgr backup",                    "Create backup"),
@@ -1729,7 +1870,7 @@ def usage():
         lines += ["", u["serve"]]
 
     lines += [
-        "", u["status"], u["logs"], u["restart"], u["update"], u["coreupdate"],
+        "", u["status"], u["logs"], u["restart"], u["sni"], u["update"], u["coreupdate"],
         u["backup"], u["bk_auto"], u["bk_en"], u["bk_dis"], u["restore"], u["uninstall"],
         "",
     ]
@@ -1781,6 +1922,14 @@ def main():
         return
     elif section == "restart":
         cmd_restart()
+        return
+    elif section == "sni":
+        if len(args) > 1 and args[1] in ("prune", "--prune"):
+            cmd_sni(prune=True)
+        elif len(args) > 1:
+            cmd_sni(args[1])
+        else:
+            cmd_sni()
         return
     elif section == "serve":
         cmd_serve()

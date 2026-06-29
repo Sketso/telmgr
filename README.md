@@ -90,6 +90,9 @@ telmgr bot logs [lines]            # Telegram bot logs (default: 50)
 telmgr status                      # proxy, bot, and user status
 telmgr logs [lines]                # proxy container logs (default: 50)
 telmgr restart                     # restart proxy
+telmgr sni                         # show masking SNI (FakeTLS domain baked into links)
+telmgr sni <domain>                # switch SNI to a white one (e.g. hcaptcha.com); user links change
+telmgr sni prune                   # keep only the current SNI (old links stop working)
 telmgr update                      # update telmgr and bot.py from GitHub
 telmgr coreupdate                  # update proxy Docker image
 telmgr backup                      # create local backup (tar.gz)
