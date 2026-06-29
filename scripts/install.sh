@@ -129,6 +129,9 @@ echo "Select proxy engine:"
 echo "  [1] telemt-docker (default, recommended) — stable, low memory (~12 MB), hot-reload on user changes"
 echo "  [2] mtproto.zig — advanced DPI bypass, recommended for Apple devices (~1 MB)"
 echo "      Note: adding/removing users restarts the container (~1-2 sec downtime each time)"
+echo "  [3] mtg-multi — multi-secret fork of 9seconds/mtg; best DPI bypass on 'dirty' hostings"
+echo "      where telemt's FakeTLS gets blocked. Per-user secrets, runs on host network."
+echo "      Note: secret embeds the front domain (SNI); it must be a real TLS site on :443."
 read -p "Enter choice [1]: " ENGINE_CHOICE
 ENGINE_CHOICE=${ENGINE_CHOICE:-1}
 
@@ -139,6 +142,13 @@ if [[ "$ENGINE_CHOICE" == "2" ]]; then
     DEFAULT_PORT=8443
     warn "Note: port 443 gives best DPI bypass results, but may already be in use on your server."
     info "First Docker build may take 3-5 minutes (compiling Zig)."
+elif [[ "$ENGINE_CHOICE" == "3" ]]; then
+    PROXY_ENGINE=mtg_multi
+    PROXY_CONTAINER=mtg-multi
+    PROXY_IMAGE="ghcr.io/dolonet/mtg-multi:latest"
+    DEFAULT_PORT=8888
+    warn "Note: pick a port that your DPI lets through (some hostings drop arbitrary high ports)."
+    info "The front domain (SNI) defaults to your host; override later with TELEMT_SNI if it is DPI-flagged."
 else
     PROXY_ENGINE=telemt
     PROXY_CONTAINER=telemt
@@ -283,6 +293,38 @@ services:
       - ./mtproto-zig.toml:/etc/mtproto-proxy/config.toml:ro
     ports:
       - "$TELEMT_PORT:$TELEMT_PORT/tcp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+EOF
+)
+elif [[ "$PROXY_ENGINE" == "mtg_multi" ]]; then
+    PROXY_CONFIG="$TELEMT_DIR/mtg-multi.toml"
+    MTG_SNI="${TELEMT_SNI:-$TELEMT_HOST}"
+    MTG_SNI_HEX=$(python3 -c "import sys;print(sys.argv[1].encode().hex())" "$MTG_SNI")
+    cat > "$PROXY_CONFIG" << EOF
+bind-to = "0.0.0.0:$TELEMT_PORT"
+
+# [secrets] must stay the LAST section — in TOML all keys after a [table] belong
+# to it. Each value is a FakeTLS secret ee<16-byte-hex><front-domain-hex>; the
+# front domain ($MTG_SNI) must be a real TLS site reachable on :443.
+[secrets]
+$FIRST_USER = "ee$SECRET$MTG_SNI_HEX"
+EOF
+    ok "mtg-multi.toml created (front SNI: $MTG_SNI)"
+
+    TELEMT_SERVICE=$(cat << EOF
+services:
+  mtg-multi:
+    image: ghcr.io/dolonet/mtg-multi:latest
+    container_name: mtg-multi
+    restart: always
+    network_mode: host
+    volumes:
+      - ./mtg-multi.toml:/config.toml:ro
+    command: run /config.toml
     logging:
       driver: json-file
       options:

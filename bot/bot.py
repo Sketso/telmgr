@@ -81,11 +81,11 @@ class LocalServerClient:
                 result_lines, inserted = [], False
                 for line in lines:
                     result_lines.append(line)
-                    if line.strip() == "[access.users]" and not inserted:
-                        result_lines.append(f'{name} = "{secret}"')
+                    if line.strip() == telmgr.USER_SECTION_HEADER and not inserted:
+                        result_lines.append(f'{name} = "{telmgr.render_user_value(secret)}"')
                         inserted = True
                 if not inserted:
-                    raise ValueError("Секция [access.users] не найдена")
+                    raise ValueError(f"Секция {telmgr.USER_SECTION_HEADER} не найдена")
                 telmgr.write_toml("\n".join(result_lines))
                 expires = None
                 if days > 0:
@@ -860,7 +860,8 @@ async def _notify_if_corrupt(e):
     msg = str(e)
     if "откат" in msg.lower() or "невалидный" in msg.lower():
         try:
-            await bot.send_message(SUPER_ADMIN_ID, "🚨 Конфиг telemt.toml повреждён и откатан!\nОшибка: " + msg)
+            cfg_name = os.path.basename(telmgr.TOML_PATH)
+            await bot.send_message(SUPER_ADMIN_ID, f"🚨 Конфиг {cfg_name} повреждён и откатан!\nОшибка: " + msg)
         except Exception:
             pass
 

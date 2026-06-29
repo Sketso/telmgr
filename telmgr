@@ -47,15 +47,35 @@ for _p in _env_paths:
         break
 
 TELEMT_DIR = os.environ.get("TELEMT_DIR", os.path.join(os.path.expanduser("~"), "telemt"))
-PROXY_ENGINE = os.environ.get("PROXY_ENGINE", "telemt")  # telemt | mtproto_zig
+PROXY_ENGINE = os.environ.get("PROXY_ENGINE", "telemt")  # telemt | mtproto_zig | mtg_multi
 if PROXY_ENGINE == "mtproto_zig":
     TOML_PATH       = os.path.join(TELEMT_DIR, "mtproto-zig.toml")
     PROXY_CONTAINER = "mtproto-zig"
     PROXY_IMAGE     = "ghcr.io/sleep3r/mtproto.zig:latest"
+elif PROXY_ENGINE == "mtg_multi":
+    TOML_PATH       = os.path.join(TELEMT_DIR, "mtg-multi.toml")
+    PROXY_CONTAINER = "mtg-multi"
+    PROXY_IMAGE     = "ghcr.io/dolonet/mtg-multi:latest"
 else:
     TOML_PATH       = os.path.join(TELEMT_DIR, "telemt.toml")
     PROXY_CONTAINER = "telemt"
     PROXY_IMAGE     = "whn0thacked/telemt-docker:latest"
+
+# Секция конфига с пользователями и формат хранимого секрета зависят от движка:
+#   telemt / mtproto_zig — секция [access.users], значение = голый 16-байтный hex;
+#   mtg_multi            — секция [secrets], значение = "ee<16hex><sni_hex>"
+#                          (полный FakeTLS-секрет с зашитым доменом-фронтом).
+# ВАЖНО: у mtg_multi секция [secrets] должна быть ПОСЛЕДНЕЙ в конфиге (в TOML все
+# ключи после [section] принадлежат этой таблице). Поэтому в mtg-multi.toml её
+# держим в самом низу, а новых юзеров дописываем сразу под заголовком.
+if PROXY_ENGINE == "mtg_multi":
+    USER_SECTION_HEADER = "[secrets]"
+    _SECRET_VAL_RE      = r'ee[0-9a-f]{32}[0-9a-f]*'    # полный хранимый секрет
+    _SECRET_CAP_RE      = r'ee([0-9a-f]{32})[0-9a-f]*'  # захват голого 16-байтного
+else:
+    USER_SECTION_HEADER = "[access.users]"
+    _SECRET_VAL_RE      = r'[0-9a-f]{32}'
+    _SECRET_CAP_RE      = r'([0-9a-f]{32})'
 META_PATH = os.path.join(TELEMT_DIR, ".telmgr-meta.json")
 ADMINS_PATH = os.path.join(TELEMT_DIR, ".telmgr-admins.json")
 SERVERS_PATH = os.path.join(TELEMT_DIR, ".telmgr-servers.json")
@@ -172,16 +192,16 @@ def get_users_from_toml(content):
     users = {}
     in_section = False
     for line in content.splitlines():
-        if line.strip() == "[access.users]":
+        if line.strip() == USER_SECTION_HEADER:
             in_section = True
             continue
         if in_section:
             if line.strip().startswith("["):
                 break
-            m = re.match(r'^(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
+            m = re.match(rf'^(\w+)\s*=\s*"{_SECRET_CAP_RE}"', line.strip())
             if m:
                 users[m.group(1)] = {"secret": m.group(2), "disabled": False}
-            m = re.match(r'^#\s*(\w+)\s*=\s*"([0-9a-f]{32})"', line.strip())
+            m = re.match(rf'^#\s*(\w+)\s*=\s*"{_SECRET_CAP_RE}"', line.strip())
             if m:
                 users[m.group(1)] = {"secret": m.group(2), "disabled": True}
     return users
@@ -195,6 +215,18 @@ def build_link(secret):
     domain_hex = PUBLIC_SNI.encode().hex()
     full_secret = f"ee{secret}{domain_hex}"
     return f"tg://proxy?server={PUBLIC_HOST}&port={PUBLIC_PORT}&secret={full_secret}"
+
+def render_user_value(secret):
+    """Значение, которое пишется в конфиг прокси для секрета пользователя.
+    mtg_multi хранит полный FakeTLS-секрет ee<secret><sni_hex> (с зашитым доменом),
+    telemt/mtproto_zig — голый 16-байтный секрет (домен в конфиг не зашивается).
+    .telmgr-meta.json во всех случаях хранит голый секрет, поэтому build_link
+    остаётся единым для всех движков."""
+    if PROXY_ENGINE == "mtg_multi":
+        if not PUBLIC_SNI:
+            err("Для mtg_multi нужен SNI: задай TELEMT_SNI (или TELEMT_HOST) в .env")
+        return f"ee{secret}{PUBLIC_SNI.encode().hex()}"
+    return secret
 
 # === Команды ===
 @_with_config_lock
@@ -215,12 +247,12 @@ def cmd_add(name, days=0):
     inserted = False
     for line in lines:
         result.append(line)
-        if line.strip() == "[access.users]" and not inserted:
-            result.append(f'{name} = "{secret}"')
+        if line.strip() == USER_SECTION_HEADER and not inserted:
+            result.append(f'{name} = "{render_user_value(secret)}"')
             inserted = True
 
     if not inserted:
-        err("Секция [access.users] не найдена в конфиге")
+        err(f"Секция {USER_SECTION_HEADER} не найдена в конфиге")
 
     write_toml("\n".join(result))
 
@@ -254,7 +286,7 @@ def cmd_delete(name):
         err(f"Пользователь '{name}' не найден")
 
     lines = content.splitlines()
-    result = [l for l in lines if not re.match(rf'^#?\s*{name}\s*=\s*"[0-9a-f]{{32}}"', l)]
+    result = [l for l in lines if not re.match(rf'^#?\s*{name}\s*=\s*"{_SECRET_VAL_RE}"', l)]
     write_toml("\n".join(result))
 
     meta = load_meta()
@@ -278,7 +310,7 @@ def cmd_disable(name):
         return
 
     new_content = re.sub(
-        rf'^({name}\s*=\s*"[0-9a-f]{{32}}")',
+        rf'^({name}\s*=\s*"{_SECRET_VAL_RE}")',
         r'# \1',
         content,
         flags=re.MULTILINE
@@ -305,7 +337,7 @@ def cmd_enable(name):
         return
 
     new_content = re.sub(
-        rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+        rf'^#\s*({name}\s*=\s*"{_SECRET_VAL_RE}")',
         r'\1',
         content,
         flags=re.MULTILINE
@@ -343,7 +375,7 @@ def cmd_limit(name, days):
         # Auto-enable если был отключён
         if users[name]["disabled"]:
             new_content = re.sub(
-                rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+                rf'^#\s*({name}\s*=\s*"{_SECRET_VAL_RE}")',
                 r'\1',
                 content,
                 flags=re.MULTILINE
@@ -356,7 +388,7 @@ def cmd_limit(name, days):
     # Auto-enable если был отключён
     if users[name]["disabled"]:
         new_content = re.sub(
-            rf'^#\s*({name}\s*=\s*"[0-9a-f]{{32}}")',
+            rf'^#\s*({name}\s*=\s*"{_SECRET_VAL_RE}")',
             r'\1',
             content,
             flags=re.MULTILINE
@@ -1534,11 +1566,11 @@ class _TelmgrAPIHandler(http.server.BaseHTTPRequestHandler):
             inserted = False
             for line in lines:
                 result_lines.append(line)
-                if line.strip() == "[access.users]" and not inserted:
-                    result_lines.append(f'{name} = "{secret}"')
+                if line.strip() == USER_SECTION_HEADER and not inserted:
+                    result_lines.append(f'{name} = "{render_user_value(secret)}"')
                     inserted = True
             if not inserted:
-                self._send_json({"error": "Секция [access.users] не найдена"}, 500)
+                self._send_json({"error": f"Секция {USER_SECTION_HEADER} не найдена"}, 500)
                 return
             write_toml("\n".join(result_lines))
             meta = load_meta()
